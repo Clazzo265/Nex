@@ -61,7 +61,7 @@ export const GradeInputSchema = z.object({
 });
 
 export const TransactionInputSchema = z.object({
-  type: z.enum(['income', 'expense']),
+  type: z.enum(['income', 'expense', 'transfer']),
   amountMajor: z
     .string()
     .trim()
@@ -70,6 +70,7 @@ export const TransactionInputSchema = z.object({
   category: z.string().trim().min(1, 'Category is required').max(60),
   description: z.string().trim().max(300).optional(),
   paymentMethod: z.string().trim().max(60).optional(),
+  transferAccount: z.string().trim().max(60).optional(),
   transactionDate: z.string().min(1, 'Date is required').max(40),
   isEstimate: z.boolean().default(false),
 });

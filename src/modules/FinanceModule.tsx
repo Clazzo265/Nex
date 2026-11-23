@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Download, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeftRight, CheckCircle2, Download, Plus, Trash2 } from 'lucide-react';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
 import { useWorkspace } from '../contexts/WorkspaceContext';
 import {
@@ -7,6 +7,7 @@ import {
   computeFinanceSummary,
   computeSavingsProgressPercent,
   exportTransactionsToCSV,
+  findPotentialDuplicateTransaction,
   formatMinorCurrency,
   parseMajorToMinor,
   SUPPORTED_CURRENCIES,
@@ -38,13 +39,30 @@ export const FinanceModule: React.FC = () => {
   const [busyTx, setBusyTx] = useState(false);
 
   // Transaction form
-  const [txType, setTxType] = useState<'expense' | 'income'>('expense');
+  const [txType, setTxType] = useState<'expense' | 'income' | 'transfer'>('expense');
   const [amountMajor, setAmountMajor] = useState('');
   const [category, setCategory] = useState('Groceries');
   const [description, setDescription] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('Mobile Money');
+  const [transferAccount, setTransferAccount] = useState('');
   const [txDate, setTxDate] = useState(todayKey);
   const [isEstimate, setIsEstimate] = useState(false);
+
+  const [pendingDuplicateConfirm, setPendingDuplicateConfirm] = useState<{
+    parsedData: {
+      type: 'income' | 'expense' | 'transfer';
+      amountMajor: string;
+      currency: string;
+      category: string;
+      description?: string;
+      paymentMethod?: string;
+      transferAccount?: string;
+      transactionDate: string;
+      isEstimate: boolean;
+    };
+    amountMinor: number;
+    existingMatch: Transaction;
+  } | null>(null);
 
   // Budget form
   const [budgetCat, setBudgetCat] = useState('Groceries');
@@ -83,6 +101,58 @@ export const FinanceModule: React.FC = () => {
     [transactions, selectedCurrency, selectedMonth]
   );
 
+  const commitTransaction = async (
+    parsedData: {
+      type: 'income' | 'expense' | 'transfer';
+      amountMajor: string;
+      currency: string;
+      category: string;
+      description?: string;
+      paymentMethod?: string;
+      transferAccount?: string;
+      transactionDate: string;
+      isEstimate: boolean;
+    },
+    amountMinor: number
+  ) => {
+    setBusyTx(true);
+    try {
+      const idempotencyKey = `tx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const saved = await saveRecord<Transaction>(
+        'transactions',
+        {
+          type: parsedData.type,
+          amountMinor,
+          currency: parsedData.currency,
+          category: parsedData.category,
+          description: parsedData.description,
+          paymentMethod: parsedData.paymentMethod,
+          transferAccount: parsedData.transferAccount,
+          transactionDate: parsedData.transactionDate,
+          isEstimate: parsedData.isEstimate,
+          idempotencyKey,
+        },
+        false
+      );
+      await logAudit(
+        'transaction',
+        saved.id,
+        'create',
+        `Recorded ${parsedData.type} (${parsedData.category}) ${formatMinorCurrency(
+          amountMinor,
+          parsedData.currency
+        )}`
+      );
+      setAmountMajor('');
+      setDescription('');
+      setTransferAccount('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save transaction.');
+    } finally {
+      setBusyTx(false);
+    }
+  };
+
   const handleCreateTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busyTx) return;
@@ -92,9 +162,10 @@ export const FinanceModule: React.FC = () => {
       type: txType,
       amountMajor,
       currency: selectedCurrency,
-      category,
+      category: txType === 'transfer' && !category.trim() ? 'Account Transfer' : category,
       description: description || undefined,
       paymentMethod: paymentMethod || undefined,
+      transferAccount: txType === 'transfer' && transferAccount.trim() ? transferAccount.trim() : undefined,
       transactionDate: txDate,
       isEstimate,
     });
@@ -103,41 +174,29 @@ export const FinanceModule: React.FC = () => {
       return;
     }
 
-    setBusyTx(true);
-    try {
-      const amountMinor = parseMajorToMinor(parsed.data.amountMajor);
-      const idempotencyKey = `tx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const saved = await saveRecord<Transaction>(
-        'transactions',
-        {
-          type: parsed.data.type,
-          amountMinor,
-          currency: parsed.data.currency,
-          category: parsed.data.category,
-          description: parsed.data.description,
-          paymentMethod: parsed.data.paymentMethod,
-          transactionDate: parsed.data.transactionDate,
-          isEstimate: parsed.data.isEstimate,
-          idempotencyKey,
-        },
-        false
-      );
-      await logAudit(
-        'transaction',
-        saved.id,
-        'create',
-        `Recorded ${parsed.data.type} (${parsed.data.category}) ${formatMinorCurrency(
-          amountMinor,
-          parsed.data.currency
-        )}`
-      );
-      setAmountMajor('');
-      setDescription('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save transaction.');
-    } finally {
-      setBusyTx(false);
+    const amountMinor = parseMajorToMinor(parsed.data.amountMajor);
+    const duplicate = findPotentialDuplicateTransaction(
+      {
+        type: parsed.data.type,
+        amountMinor,
+        currency: parsed.data.currency,
+        category: parsed.data.category,
+        transactionDate: parsed.data.transactionDate,
+        description: parsed.data.description,
+      },
+      transactions
+    );
+
+    if (duplicate) {
+      setPendingDuplicateConfirm({
+        parsedData: parsed.data,
+        amountMinor,
+        existingMatch: duplicate,
+      });
+      return;
     }
+
+    await commitTransaction(parsed.data, amountMinor);
   };
 
   const handleCreateBudget = async (e: React.FormEvent) => {
@@ -250,7 +309,7 @@ export const FinanceModule: React.FC = () => {
             value={selectedCurrency}
             onChange={(e) => setSelectedCurrency(e.target.value)}
             aria-label="Select currency"
-            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111C32] px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
+            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111C32] px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white min-h-[38px]"
           >
             {Object.values(SUPPORTED_CURRENCIES).map((c) => (
               <option key={c.code} value={c.code}>
@@ -263,18 +322,24 @@ export const FinanceModule: React.FC = () => {
             value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
             aria-label="Filter month"
-            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111C32] px-3 py-1.5 text-xs font-mono text-slate-900 dark:text-white"
+            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111C32] px-3 py-1.5 text-xs font-mono text-slate-900 dark:text-white min-h-[38px]"
           />
         </div>
 
-        <button
-          type="button"
-          onClick={handleExportCSV}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111C32] px-3.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
-        >
-          <Download className="w-3.5 h-3.5" />
-          Export CSV
-        </button>
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+            Ledger {summary.reconciliation.isBalanced ? 'Reconciled' : 'Attention Needed'}
+          </span>
+          <button
+            type="button"
+            onClick={handleExportCSV}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111C32] px-3.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 min-h-[38px]"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export CSV
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -307,9 +372,11 @@ export const FinanceModule: React.FC = () => {
           </p>
         </div>
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">Estimated Planned Spend</p>
-          <p className="mt-1 font-mono tabular-nums text-xl font-semibold text-slate-600 dark:text-slate-300">
-            {formatMinorCurrency(summary.estimatedExpenseMinor, selectedCurrency)}
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Internal Transfers (Excluded)
+          </p>
+          <p className="mt-1 font-mono tabular-nums text-xl font-semibold text-sky-600 dark:text-sky-400">
+            {formatMinorCurrency(summary.transferVolumeMinor, selectedCurrency)}
           </p>
         </div>
       </section>
@@ -327,12 +394,13 @@ export const FinanceModule: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <select
                 value={txType}
-                onChange={(e) => setTxType(e.target.value as 'expense' | 'income')}
+                onChange={(e) => setTxType(e.target.value as 'expense' | 'income' | 'transfer')}
                 aria-label="Transaction type"
                 className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
               >
                 <option value="expense">Expense</option>
                 <option value="income">Income</option>
+                <option value="transfer">Transfer (Between Accounts)</option>
               </select>
               <input
                 type="text"
@@ -354,7 +422,7 @@ export const FinanceModule: React.FC = () => {
                 type="text"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                placeholder="Category (Groceries, Data, Tuition)"
+                placeholder={txType === 'transfer' ? 'Transfer Label' : 'Category (Groceries, Data)'}
                 required
                 className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
               />
@@ -362,17 +430,37 @@ export const FinanceModule: React.FC = () => {
                 type="text"
                 value={paymentMethod}
                 onChange={(e) => setPaymentMethod(e.target.value)}
-                placeholder="Payment Method (Cash, Airtel Money)"
+                placeholder={txType === 'transfer' ? 'From Account' : 'Payment Method'}
                 className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
               />
+              {txType === 'transfer' ? (
+                <input
+                  type="text"
+                  value={transferAccount}
+                  onChange={(e) => setTransferAccount(e.target.value)}
+                  placeholder="To Account (e.g. Savings)"
+                  className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Description (optional)"
+                  className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
+                />
+              )}
+            </div>
+
+            {txType === 'transfer' && (
               <input
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Description (optional)"
-                className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
+                placeholder="Transfer notes (transfers are excluded from income & expense totals)"
+                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-xs text-slate-900 dark:text-white"
               />
-            </div>
+            )}
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <label className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
@@ -386,7 +474,7 @@ export const FinanceModule: React.FC = () => {
               <button
                 type="submit"
                 disabled={busyTx}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-xs font-medium text-white disabled:opacity-50 min-h-[38px]"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {busyTx ? 'Saving...' : 'Save Entry'}
@@ -420,13 +508,26 @@ export const FinanceModule: React.FC = () => {
                           {formatDisplayDate(tx.transactionDate, settings.dateFormat)}
                         </td>
                         <td className="py-2.5 pr-3">
-                          <p className="font-medium text-slate-900 dark:text-white">
-                            {tx.category}
-                            {tx.isEstimate ? ' · Estimate' : ''}
+                          <p className="font-medium text-slate-900 dark:text-white flex items-center gap-1.5">
+                            {tx.type === 'transfer' && (
+                              <ArrowLeftRight className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                            )}
+                            <span>
+                              {tx.category}
+                              {tx.type === 'transfer' ? ' · Transfer' : ''}
+                              {tx.isEstimate ? ' · Estimate' : ''}
+                            </span>
                           </p>
-                          {(tx.description || tx.paymentMethod) && (
+                          {(tx.description || tx.paymentMethod || tx.transferAccount) && (
                             <p className="text-slate-500 dark:text-slate-400">
-                              {[tx.description, tx.paymentMethod].filter(Boolean).join(' · ')}
+                              {[
+                                tx.paymentMethod && tx.transferAccount
+                                  ? `${tx.paymentMethod} → ${tx.transferAccount}`
+                                  : tx.paymentMethod,
+                                tx.description,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
                             </p>
                           )}
                         </td>
@@ -434,10 +535,12 @@ export const FinanceModule: React.FC = () => {
                           className={`py-2.5 pr-3 font-mono tabular-nums text-right font-medium whitespace-nowrap ${
                             tx.type === 'income'
                               ? 'text-emerald-600 dark:text-emerald-400'
+                              : tx.type === 'transfer'
+                              ? 'text-sky-600 dark:text-sky-400'
                               : 'text-slate-900 dark:text-white'
                           }`}
                         >
-                          {tx.type === 'income' ? '+' : '-'}
+                          {tx.type === 'income' ? '+' : tx.type === 'transfer' ? '' : '-'}
                           {formatMinorCurrency(tx.amountMinor, tx.currency)}
                         </td>
                         <td className="py-2.5 text-right">
@@ -680,6 +783,29 @@ export const FinanceModule: React.FC = () => {
           )}
         </section>
       </div>
+
+      {/* Duplicate Transaction Confirmation */}
+      <ConfirmDialog
+        open={!!pendingDuplicateConfirm}
+        title="Possible duplicate transaction detected"
+        description={
+          pendingDuplicateConfirm
+            ? `A matching ${pendingDuplicateConfirm.existingMatch.type} entry (${pendingDuplicateConfirm.existingMatch.category} for ${formatMinorCurrency(
+                pendingDuplicateConfirm.amountMinor,
+                pendingDuplicateConfirm.parsedData.currency
+              )} on ${pendingDuplicateConfirm.parsedData.transactionDate}) already exists. Save anyway?`
+            : ''
+        }
+        confirmLabel="Save Anyway"
+        onCancel={() => setPendingDuplicateConfirm(null)}
+        onConfirm={async () => {
+          if (pendingDuplicateConfirm) {
+            const target = pendingDuplicateConfirm;
+            setPendingDuplicateConfirm(null);
+            await commitTransaction(target.parsedData, target.amountMinor);
+          }
+        }}
+      />
 
       <ConfirmDialog
         open={!!deleteTarget}

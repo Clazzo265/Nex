@@ -1,53 +1,40 @@
 import 'dotenv/config';
 import express from 'express';
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response } from 'express';
+import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Type } from '@google/genai';
-import { z } from 'zod';
+import {
+  AssistRequestSchema,
+  createFirebaseTokenVerifier,
+  createVerifyFirebaseAuthMiddleware,
+  SlidingWindowLimiter,
+  UsageTracker,
+  withTimeout,
+  type VerifiedCaller,
+} from './src/server/aiSecurity.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
 const isProd = process.env.NODE_ENV === 'production';
+const AI_TIMEOUT_MS = 25_000;
+const USER_RATE_LIMIT = 15;
+const GLOBAL_RATE_LIMIT = 120;
 
-// Simple in-memory rate limiter for AI endpoints
-const rateBuckets = new Map<string, { count: number; resetAt: number }>();
-
-function rateLimit(req: Request, res: Response, next: NextFunction): void {
-  const key = req.ip || 'unknown';
-  const now = Date.now();
-  const bucket = rateBuckets.get(key);
-  if (!bucket || bucket.resetAt <= now) {
-    rateBuckets.set(key, { count: 1, resetAt: now + 60_000 });
-    next();
-    return;
+function readFirebaseProjectId(): string {
+  if (process.env.FIREBASE_PROJECT_ID) return process.env.FIREBASE_PROJECT_ID;
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, 'firebase-applet-config.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { projectId?: string };
+    return parsed.projectId || '';
+  } catch {
+    return '';
   }
-  if (bucket.count >= 25) {
-    res.status(429).json({
-      error: 'Too many requests',
-      message: 'Please wait a minute before sending another assistant request.',
-    });
-    return;
-  }
-  bucket.count += 1;
-  next();
 }
-
-const AssistRequestSchema = z.object({
-  prompt: z.string().trim().min(1).max(4000),
-  mode: z.enum(['chat', 'plan_tasks', 'study_plan', 'finance_explain']).default('chat'),
-  consentedContext: z
-    .object({
-      tasksSummary: z.string().max(2000).optional(),
-      academicSummary: z.string().max(2000).optional(),
-      financeSummary: z.string().max(2000).optional(),
-      goalsSummary: z.string().max(1500).optional(),
-      notesSummary: z.string().max(2000).optional(),
-    })
-    .optional(),
-});
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -67,7 +54,13 @@ function getGeminiClient(): GoogleGenAI | null {
 async function startServer(): Promise<void> {
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '256kb' }));
+  app.use(express.json({ limit: '128kb' }));
+
+  const projectId = readFirebaseProjectId();
+  const verifyAuth = createVerifyFirebaseAuthMiddleware(createFirebaseTokenVerifier(projectId));
+  const userLimiter = new SlidingWindowLimiter(USER_RATE_LIMIT, 60_000);
+  const globalLimiter = new SlidingWindowLimiter(GLOBAL_RATE_LIMIT, 60_000);
+  const usageTracker = new UsageTracker();
 
   app.get('/api/health', (_req: Request, res: Response) => {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -75,16 +68,43 @@ async function startServer(): Promise<void> {
     res.json({
       status: 'ok',
       aiConfigured,
+      authVerificationConfigured: Boolean(projectId),
       timestamp: new Date().toISOString(),
     });
   });
 
-  app.post('/api/ai/assist', rateLimit, async (req: Request, res: Response) => {
+  app.post('/api/ai/assist', verifyAuth, async (req: Request, res: Response) => {
+    const caller = (req as Request & { verifiedCaller?: VerifiedCaller }).verifiedCaller;
+    if (!caller) {
+      res.status(401).json({ error: 'AUTH_REQUIRED', message: 'Authentication required.' });
+      return;
+    }
+
+    const globalCheck = globalLimiter.consume('global');
+    if (!globalCheck.allowed) {
+      res.setHeader('Retry-After', String(globalCheck.retryAfterSeconds));
+      res.status(429).json({
+        error: 'GLOBAL_RATE_LIMITED',
+        message: 'AI Assistant capacity is busy right now. Retry shortly.',
+      });
+      return;
+    }
+
+    const userCheck = userLimiter.consume(caller.uid);
+    if (!userCheck.allowed) {
+      res.setHeader('Retry-After', String(userCheck.retryAfterSeconds));
+      res.status(429).json({
+        error: 'USER_RATE_LIMITED',
+        message: `Rate limit reached (${USER_RATE_LIMIT} requests/min). Retry in ${userCheck.retryAfterSeconds}s.`,
+      });
+      return;
+    }
+
     const parsed = AssistRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
-        error: 'Validation failed',
-        message: 'Please provide a valid prompt within 4,000 characters.',
+        error: 'VALIDATION_FAILED',
+        message: parsed.error.issues[0]?.message ?? 'Invalid assistant payload.',
         issues: parsed.error.issues,
       });
       return;
@@ -131,36 +151,39 @@ async function startServer(): Promise<void> {
 
     try {
       if (mode === 'plan_tasks' || mode === 'study_plan') {
-        const response = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: prompt,
-          config: {
-            systemInstruction,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                reply: {
-                  type: Type.STRING,
-                  description: 'Helpful explanation and guidance for the user.',
-                },
-                proposedTasks: {
-                  type: Type.ARRAY,
-                  description: 'Suggested actionable tasks for the user to review before saving.',
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      title: { type: Type.STRING },
-                      priority: { type: Type.STRING },
-                      category: { type: Type.STRING },
-                      notes: { type: Type.STRING },
+        const response = await withTimeout(
+          ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: prompt,
+            config: {
+              systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  reply: {
+                    type: Type.STRING,
+                    description: 'Helpful explanation and guidance for the user.',
+                  },
+                  proposedTasks: {
+                    type: Type.ARRAY,
+                    description: 'Suggested actionable tasks for the user to review before saving.',
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        title: { type: Type.STRING },
+                        priority: { type: Type.STRING },
+                        category: { type: Type.STRING },
+                        notes: { type: Type.STRING },
+                      },
                     },
                   },
                 },
               },
             },
-          },
-        });
+          }),
+          AI_TIMEOUT_MS
+        );
 
         const rawText = (response.text ?? '{}').trim();
         let structured: { reply?: string; proposedTasks?: unknown[] } = {};
@@ -187,29 +210,50 @@ async function startServer(): Promise<void> {
               }))
           : [];
 
+        const replyText =
+          typeof structured.reply === 'string'
+            ? structured.reply
+            : 'Here is a suggested plan for your review.';
+        usageTracker.record(caller.uid, prompt.length, replyText.length);
+
         res.json({
-          reply: typeof structured.reply === 'string' ? structured.reply : 'Here is a suggested plan for your review.',
+          reply: replyText,
           proposedTasks: safeTasks,
           isAiSuggestion: true,
+          usage: usageTracker.snapshot(caller.uid, userLimiter, USER_RATE_LIMIT),
         });
         return;
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: prompt,
-        config: {
-          systemInstruction,
-        },
-      });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            systemInstruction,
+          },
+        }),
+        AI_TIMEOUT_MS
+      );
+
+      const replyText = response.text ?? 'No response generated.';
+      usageTracker.record(caller.uid, prompt.length, replyText.length);
 
       res.json({
-        reply: response.text ?? 'No response generated.',
+        reply: replyText,
         proposedTasks: [],
         isAiSuggestion: true,
+        usage: usageTracker.snapshot(caller.uid, userLimiter, USER_RATE_LIMIT),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Assistant request failed';
+      if (message === 'AI_REQUEST_TIMEOUT') {
+        res.status(504).json({
+          error: 'AI_TIMEOUT',
+          message: 'The assistant request timed out. Please try a shorter prompt.',
+        });
+        return;
+      }
       console.error('Gemini API route error:', message);
       res.status(502).json({
         error: 'AI_REQUEST_FAILED',
@@ -218,10 +262,24 @@ async function startServer(): Promise<void> {
     }
   });
 
+  const httpServer = http.createServer(app);
+
   if (!isProd) {
+    const disableHmr =
+      process.env.DISABLE_HMR === 'true' ||
+      Boolean(process.env.K_SERVICE || process.env.APP_URL);
+    if (disableHmr) {
+      process.env.DISABLE_HMR = 'true';
+    }
     const { createServer } = await import('vite');
     const vite = await createServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        ws: { server: httpServer },
+        hmr: disableHmr ? false : { server: httpServer },
+        ...(disableHmr ? { watch: null } : {}),
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -233,7 +291,7 @@ async function startServer(): Promise<void> {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`NEXORA server running on http://0.0.0.0:${PORT}`);
   });
 }

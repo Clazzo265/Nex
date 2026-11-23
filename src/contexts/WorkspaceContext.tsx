@@ -16,12 +16,23 @@ import {
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   clearUserOfflineData,
+  detectVersionConflict,
   enqueueSyncOperation,
   readCachedCollection,
+  readSyncConflicts,
   readSyncQueue,
+  removeSyncConflict,
   removeSyncOperation,
+  saveSyncConflict,
+  updateSyncOperation,
   writeCachedCollection,
 } from '../lib/offlineDb';
+import {
+  checkStorageQuota,
+  computeBackoffDelayMs,
+  type StorageQuotaStatus,
+  type SyncConflict,
+} from '../lib/offlineSyncUtils';
 import { computeNextRecurrenceDate, getTodayKey } from '../lib/planner';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
@@ -110,6 +121,8 @@ interface WorkspaceContextValue {
   isOnline: boolean;
   syncState: SyncState;
   pendingSyncCount: number;
+  conflicts: SyncConflict[];
+  storageQuota: StorageQuotaStatus | null;
   loadingData: boolean;
   syncError: string | null;
   profile: UserProfile;
@@ -143,7 +156,8 @@ interface WorkspaceContextValue {
   markNotificationRead: (id: string) => Promise<void>;
   clearAllNotifications: () => Promise<void>;
   logAudit: (entityType: string, entityId: string, action: AuditLog['action'], summary: string) => Promise<void>;
-  retrySyncNow: () => Promise<void>;
+  retrySyncNow: (forceAll?: boolean) => Promise<void>;
+  resolveConflict: (conflictId: string, strategy: 'keep_local' | 'use_cloud') => Promise<void>;
   exportAllUserData: () => Promise<string>;
   purgeCloudAndLocalAccountData: () => Promise<void>;
 }
@@ -171,7 +185,7 @@ const SYNCED_COLLECTIONS = [
 ] as const;
 
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { authMode, uid, displayName, email, emailVerified, deleteAccount } = useAuth();
+  const { authMode, uid, displayName, email, emailVerified, getIdToken, deleteAccount } = useAuth();
   const { setTheme } = useTheme();
 
   const [isOnline, setIsOnline] = useState<boolean>(
@@ -179,6 +193,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
   const [syncState, setSyncState] = useState<SyncState>('local_saved');
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
+  const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
+  const [storageQuota, setStorageQuota] = useState<StorageQuotaStatus | null>(null);
   const [loadingData, setLoadingData] = useState<boolean>(true);
   const [syncError, setSyncError] = useState<string | null>(null);
 
@@ -205,6 +221,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   const isSyncingRef = useRef(false);
+  const retryTimerRef = useRef<number | null>(null);
 
   const getSetter = useCallback((col: string): React.Dispatch<React.SetStateAction<any[]>> | null => {
     switch (col) {
@@ -229,18 +246,28 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, []);
 
+  const persistCacheSafe = useCallback(async <T,>(targetUid: string, col: string, items: T[]) => {
+    const res = await writeCachedCollection(targetUid, col, items);
+    if (!res.ok && res.error) {
+      setSyncError(res.error);
+    }
+    const quota = await checkStorageQuota();
+    setStorageQuota(quota);
+  }, []);
+
   useEffect(() => {
     const onOnline = () => setIsOnline(true);
     const onOffline = () => setIsOnline(false);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+    checkStorageQuota().then(setStorageQuota);
     return () => {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
   }, []);
 
-  // Load local IndexedDB cache immediately whenever uid/authMode initializes
+  // Load isolated IndexedDB cache whenever uid/authMode changes
   useEffect(() => {
     if (authMode === 'loading' || authMode === 'unauthenticated') {
       setLoadingData(false);
@@ -265,15 +292,22 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       for (const col of SYNCED_COLLECTIONS) {
         const items = await readCachedCollection<any>(uid, col);
         if (!cancelled) {
-          const setter = getSetter(col);
-          setter?.(items);
+          getSetter(col)?.(items);
         }
       }
       const q = await readSyncQueue(uid);
+      const savedConflicts = await readSyncConflicts(uid);
       if (!cancelled) {
         setPendingSyncCount(q.length);
+        setConflicts(savedConflicts);
         setSyncState(
-          authMode === 'local' ? 'local_saved' : q.length > 0 ? 'waiting_sync' : 'synced'
+          savedConflicts.length > 0
+            ? 'conflict'
+            : authMode === 'local'
+            ? 'local_saved'
+            : q.length > 0
+            ? 'waiting_sync'
+            : 'synced'
         );
         setLoadingData(false);
       }
@@ -284,13 +318,17 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, [authMode, uid, displayName, email, getSetter, setTheme]);
 
-  // Ensure cloud user root/profile/settings docs exist & attach Firestore onSnapshot listeners
+  // Attach Firestore listeners ONLY when authenticated AND emailVerified
   useEffect(() => {
-    if (authMode !== 'cloud' || !uid) return;
+    if (authMode !== 'cloud' || !uid || !emailVerified) return;
 
     let active = true;
+    const unsubs: Array<() => void> = [];
 
-    const ensureUserDocs = async () => {
+    const bootstrapAndListen = async () => {
+      // Ensure ID token reflects email_verified: true before initial writes
+      await getIdToken(false);
+
       try {
         const userRef = doc(db, 'users', uid);
         const userSnap = await getDoc(userRef);
@@ -330,167 +368,293 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       } catch (err) {
         console.warn('Initial cloud profile bootstrap note:', err);
       }
+
+      if (!active) return;
+
+      unsubs.push(
+        onSnapshot(
+          doc(db, 'users', uid, 'profile', 'main'),
+          (snap) => {
+            if (!active || !snap.exists()) return;
+            const data = snap.data();
+            const nextProfile: UserProfile = {
+              uid: data.uid,
+              displayName: data.displayName,
+              email: data.email,
+              bio: data.bio ?? '',
+              roleTitle: data.roleTitle ?? '',
+              institution: data.institution ?? '',
+              location: data.location ?? '',
+              createdAt: normalizeTimestamp(data.createdAt),
+              updatedAt: normalizeTimestamp(data.updatedAt),
+            };
+            setProfile(nextProfile);
+            persistCacheSafe(uid, 'profile', [nextProfile]);
+          },
+          (err) => {
+            handleFirestoreError(err, OperationType.GET, `users/${uid}/profile/main`);
+          }
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          doc(db, 'users', uid, 'settings', 'preferences'),
+          (snap) => {
+            if (!active || !snap.exists()) return;
+            const data = snap.data();
+            const nextSettings: UserSettings = {
+              uid: data.uid,
+              theme: data.theme ?? 'dark',
+              currency: data.currency ?? 'MWK',
+              timezone: data.timezone ?? 'Africa/Blantyre',
+              dateFormat: data.dateFormat ?? 'YYYY-MM-DD',
+              language: data.language ?? 'en',
+              notificationsEnabled: Boolean(data.notificationsEnabled ?? true),
+              deadlineAlerts: Boolean(data.deadlineAlerts ?? true),
+              budgetAlerts: Boolean(data.budgetAlerts ?? true),
+              dashboardWidgets: Array.isArray(data.dashboardWidgets)
+                ? data.dashboardWidgets
+                : DEFAULT_WIDGETS,
+              updatedAt: normalizeTimestamp(data.updatedAt),
+            };
+            setSettings(nextSettings);
+            setTheme(nextSettings.theme);
+            persistCacheSafe(uid, 'settings', [nextSettings]);
+          },
+          (err) => {
+            handleFirestoreError(err, OperationType.GET, `users/${uid}/settings/preferences`);
+          }
+        )
+      );
+
+      for (const col of SYNCED_COLLECTIONS) {
+        const pathStr = `users/${uid}/${col}`;
+        const q = query(collection(db, pathStr), where('uid', '==', uid));
+        const unsub = onSnapshot(
+          q,
+          (snapshot) => {
+            if (!active) return;
+            const items = snapshot.docs.map((d) => {
+              const raw = d.data();
+              return {
+                ...raw,
+                id: d.id,
+                createdAt: normalizeTimestamp(raw.createdAt),
+                updatedAt: raw.updatedAt ? normalizeTimestamp(raw.updatedAt) : undefined,
+              };
+            });
+            getSetter(col)?.(items);
+            persistCacheSafe(uid, col, items);
+            setSyncError(null);
+          },
+          (err) => {
+            console.error(`Snapshot error on ${pathStr}:`, err);
+            setSyncState('sync_failed');
+            setSyncError(`Unable to sync ${col}. Cached data remains safe.`);
+            handleFirestoreError(err, OperationType.LIST, pathStr);
+          }
+        );
+        unsubs.push(unsub);
+      }
     };
 
-    ensureUserDocs();
-
-    const unsubs: Array<() => void> = [];
-
-    unsubs.push(
-      onSnapshot(
-        doc(db, 'users', uid, 'profile', 'main'),
-        (snap) => {
-          if (!active || !snap.exists()) return;
-          const data = snap.data();
-          const nextProfile: UserProfile = {
-            uid: data.uid,
-            displayName: data.displayName,
-            email: data.email,
-            bio: data.bio ?? '',
-            roleTitle: data.roleTitle ?? '',
-            institution: data.institution ?? '',
-            location: data.location ?? '',
-            createdAt: normalizeTimestamp(data.createdAt),
-            updatedAt: normalizeTimestamp(data.updatedAt),
-          };
-          setProfile(nextProfile);
-          writeCachedCollection(uid, 'profile', [nextProfile]);
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${uid}/profile/main`);
-        }
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        doc(db, 'users', uid, 'settings', 'preferences'),
-        (snap) => {
-          if (!active || !snap.exists()) return;
-          const data = snap.data();
-          const nextSettings: UserSettings = {
-            uid: data.uid,
-            theme: data.theme ?? 'dark',
-            currency: data.currency ?? 'MWK',
-            timezone: data.timezone ?? 'Africa/Blantyre',
-            dateFormat: data.dateFormat ?? 'YYYY-MM-DD',
-            language: data.language ?? 'en',
-            notificationsEnabled: Boolean(data.notificationsEnabled ?? true),
-            deadlineAlerts: Boolean(data.deadlineAlerts ?? true),
-            budgetAlerts: Boolean(data.budgetAlerts ?? true),
-            dashboardWidgets: Array.isArray(data.dashboardWidgets)
-              ? data.dashboardWidgets
-              : DEFAULT_WIDGETS,
-            updatedAt: normalizeTimestamp(data.updatedAt),
-          };
-          setSettings(nextSettings);
-          setTheme(nextSettings.theme);
-          writeCachedCollection(uid, 'settings', [nextSettings]);
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${uid}/settings/preferences`);
-        }
-      )
-    );
-
-    for (const col of SYNCED_COLLECTIONS) {
-      const pathStr = `users/${uid}/${col}`;
-      const q = query(collection(db, pathStr), where('uid', '==', uid));
-      const unsub = onSnapshot(
-        q,
-        (snapshot) => {
-          if (!active) return;
-          const items = snapshot.docs.map((d) => {
-            const raw = d.data();
-            return {
-              ...raw,
-              id: d.id,
-              createdAt: normalizeTimestamp(raw.createdAt),
-              updatedAt: raw.updatedAt ? normalizeTimestamp(raw.updatedAt) : undefined,
-            };
-          });
-          const setter = getSetter(col);
-          setter?.(items);
-          writeCachedCollection(uid, col, items);
-          setSyncState('synced');
-          setSyncError(null);
-        },
-        (err) => {
-          console.error(`Snapshot error on ${pathStr}:`, err);
-          setSyncState('sync_failed');
-          setSyncError(`Unable to sync ${col}. Cached data remains safe.`);
-          handleFirestoreError(err, OperationType.LIST, pathStr);
-        }
-      );
-      unsubs.push(unsub);
-    }
+    bootstrapAndListen();
 
     return () => {
       active = false;
       for (const u of unsubs) u();
     };
-  }, [authMode, uid, displayName, email, getSetter, setTheme]);
+  }, [authMode, uid, emailVerified, displayName, email, getIdToken, getSetter, persistCacheSafe, setTheme]);
 
-  const flushSyncQueue = useCallback(async () => {
-    if (authMode !== 'cloud' || !isOnline || !emailVerified || isSyncingRef.current) return;
-    const queueItems = await readSyncQueue(uid);
-    if (queueItems.length === 0) {
-      setPendingSyncCount(0);
-      setSyncState('synced');
-      return;
-    }
+  const flushSyncQueue = useCallback(
+    async (forceAll = false) => {
+      if (authMode !== 'cloud' || !isOnline || !emailVerified || isSyncingRef.current) return;
+      const queueItems = await readSyncQueue(uid);
+      const currentConflicts = await readSyncConflicts(uid);
 
-    isSyncingRef.current = true;
-    setSyncState('syncing');
-
-    for (const item of queueItems) {
-      const docPath = `users/${uid}/${item.collectionName}/${item.docId}`;
-      try {
-        const ref = doc(db, `users/${uid}/${item.collectionName}`, item.docId);
-        if (item.operation === 'delete') {
-          await deleteDoc(ref);
-        } else if (item.operation === 'create' && item.payload) {
-          const cleanPayload: Record<string, unknown> = { ...item.payload };
-          delete cleanPayload.id;
-          delete cleanPayload.syncState;
-          cleanPayload.createdAt = serverTimestamp();
-          if ('updatedAt' in cleanPayload) {
-            cleanPayload.updatedAt = serverTimestamp();
-          }
-          await setDoc(ref, cleanPayload);
-        } else if (item.operation === 'update' && item.payload) {
-          const cleanPayload: Record<string, unknown> = { ...item.payload };
-          delete cleanPayload.id;
-          delete cleanPayload.uid;
-          delete cleanPayload.createdAt;
-          delete cleanPayload.syncState;
-          if ('updatedAt' in cleanPayload) {
-            cleanPayload.updatedAt = serverTimestamp();
-          }
-          await updateDoc(ref, cleanPayload);
-        }
-        await removeSyncOperation(item.id);
-      } catch (err) {
-        setSyncState('sync_failed');
-        setSyncError(err instanceof Error ? err.message : 'Sync failed');
-        break;
+      if (queueItems.length === 0) {
+        setPendingSyncCount(0);
+        setSyncState(currentConflicts.length > 0 ? 'conflict' : 'synced');
+        return;
       }
-    }
 
-    const remaining = await readSyncQueue(uid);
-    setPendingSyncCount(remaining.length);
-    if (remaining.length === 0) {
-      setSyncState('synced');
-      setSyncError(null);
-    }
-    isSyncingRef.current = false;
-  }, [authMode, isOnline, emailVerified, uid]);
+      isSyncingRef.current = true;
+      setSyncState('syncing');
+
+      let minNextDelayMs: number | null = null;
+
+      for (const item of queueItems) {
+        if (!forceAll && item.nextRetryAt) {
+          const waitMs = Date.parse(item.nextRetryAt) - Date.now();
+          if (waitMs > 0) {
+            minNextDelayMs = minNextDelayMs === null ? waitMs : Math.min(minNextDelayMs, waitMs);
+            continue;
+          }
+        }
+
+        try {
+          const ref = doc(db, `users/${uid}/${item.collectionName}`, item.docId);
+
+          if (item.operation === 'update' && item.payload) {
+            // Check remote document for version/timestamp conflicts before overwriting
+            const remoteSnap = await getDoc(ref);
+            if (remoteSnap.exists()) {
+              const remoteData = remoteSnap.data();
+              const remoteUpdatedAt = normalizeTimestamp(remoteData.updatedAt);
+              const remoteVersion =
+                typeof remoteData.version === 'number' ? remoteData.version : undefined;
+              const baseUpdatedAt = item.baseUpdatedAt ?? item.createdAt;
+              if (
+                detectVersionConflict(
+                  baseUpdatedAt,
+                  remoteUpdatedAt,
+                  item.baseVersion,
+                  remoteVersion
+                )
+              ) {
+                const conflict: SyncConflict = {
+                  id: `conf_${item.id}`,
+                  collectionName: item.collectionName,
+                  docId: item.docId,
+                  label: String(item.payload.title || item.payload.name || item.payload.category || item.docId),
+                  localPayload: item.payload,
+                  remotePayload: {
+                    ...remoteData,
+                    id: remoteSnap.id,
+                    createdAt: normalizeTimestamp(remoteData.createdAt),
+                    updatedAt: remoteUpdatedAt,
+                  },
+                  localUpdatedAt: String(item.payload.updatedAt ?? item.createdAt),
+                  remoteUpdatedAt,
+                  detectedAt: new Date().toISOString(),
+                };
+                await saveSyncConflict(uid, conflict);
+                await removeSyncOperation(item.id);
+                setConflicts(await readSyncConflicts(uid));
+                setSyncState('conflict');
+                continue;
+              }
+            }
+          }
+
+          if (item.operation === 'delete') {
+            await deleteDoc(ref);
+          } else if (item.operation === 'create' && item.payload) {
+            const cleanPayload: Record<string, unknown> = { ...item.payload };
+            delete cleanPayload.id;
+            delete cleanPayload.syncState;
+            cleanPayload.createdAt = serverTimestamp();
+            if ('updatedAt' in cleanPayload) {
+              cleanPayload.updatedAt = serverTimestamp();
+            }
+            await setDoc(ref, cleanPayload);
+          } else if (item.operation === 'update' && item.payload) {
+            const cleanPayload: Record<string, unknown> = { ...item.payload };
+            delete cleanPayload.id;
+            delete cleanPayload.uid;
+            delete cleanPayload.createdAt;
+            delete cleanPayload.syncState;
+            if ('updatedAt' in cleanPayload) {
+              cleanPayload.updatedAt = serverTimestamp();
+            }
+            await updateDoc(ref, cleanPayload);
+          }
+
+          await removeSyncOperation(item.id);
+        } catch (err) {
+          const attempts = (item.attempts || 0) + 1;
+          const delayMs = computeBackoffDelayMs(attempts);
+          const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
+          const msg = err instanceof Error ? err.message : 'Sync failed';
+          await updateSyncOperation({
+            ...item,
+            attempts,
+            nextRetryAt,
+            lastError: msg,
+          });
+          minNextDelayMs = minNextDelayMs === null ? delayMs : Math.min(minNextDelayMs, delayMs);
+          setSyncState('sync_failed');
+          setSyncError(
+            `${msg}. Retrying automatically in ${Math.max(1, Math.round(delayMs / 1000))}s.`
+          );
+        }
+      }
+
+      const remaining = await readSyncQueue(uid);
+      const nextConflicts = await readSyncConflicts(uid);
+      setPendingSyncCount(remaining.length);
+      setConflicts(nextConflicts);
+
+      if (nextConflicts.length > 0) {
+        setSyncState('conflict');
+      } else if (remaining.length === 0) {
+        setSyncState('synced');
+        setSyncError(null);
+      } else if (minNextDelayMs !== null && isOnline) {
+        setSyncState('waiting_sync');
+        if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = window.setTimeout(() => {
+          flushSyncQueue(false);
+        }, minNextDelayMs);
+      }
+
+      isSyncingRef.current = false;
+    },
+    [authMode, isOnline, emailVerified, uid]
+  );
 
   useEffect(() => {
     if (isOnline && authMode === 'cloud' && emailVerified) {
-      flushSyncQueue();
+      flushSyncQueue(false);
     }
+    return () => {
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+    };
   }, [isOnline, authMode, emailVerified, flushSyncQueue]);
+
+  const resolveConflict = async (conflictId: string, strategy: 'keep_local' | 'use_cloud') => {
+    const conflict = conflicts.find((c) => c.id === conflictId);
+    if (!conflict) return;
+
+    const ref = doc(db, `users/${uid}/${conflict.collectionName}`, conflict.docId);
+    if (strategy === 'keep_local') {
+      const cleanPayload: Record<string, unknown> = { ...conflict.localPayload };
+      delete cleanPayload.id;
+      delete cleanPayload.uid;
+      delete cleanPayload.createdAt;
+      delete cleanPayload.syncState;
+      cleanPayload.updatedAt = serverTimestamp();
+      if (typeof cleanPayload.version === 'number') {
+        const remoteVer = Number(conflict.remotePayload.version || 1);
+        cleanPayload.version = Math.max(cleanPayload.version, remoteVer) + 1;
+      }
+      await updateDoc(ref, cleanPayload);
+    } else {
+      const setter = getSetter(conflict.collectionName);
+      if (setter) {
+        setter((prev) => {
+          const updated = prev.map((item) =>
+            item.id === conflict.docId ? conflict.remotePayload : item
+          );
+          persistCacheSafe(uid, conflict.collectionName, updated);
+          return updated;
+        });
+      }
+    }
+
+    await removeSyncConflict(conflictId);
+    const remainingConflicts = await readSyncConflicts(uid);
+    setConflicts(remainingConflicts);
+    const remainingQueue = await readSyncQueue(uid);
+    setSyncState(
+      remainingConflicts.length > 0
+        ? 'conflict'
+        : remainingQueue.length > 0
+        ? 'waiting_sync'
+        : 'synced'
+    );
+  };
 
   const updateProfileData = async (patch: Partial<UserProfile>) => {
     const now = new Date().toISOString();
@@ -501,9 +665,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       updatedAt: now,
     };
     setProfile(next);
-    await writeCachedCollection(uid, 'profile', [next]);
+    await persistCacheSafe(uid, 'profile', [next]);
 
-    if (authMode === 'cloud' && isOnline) {
+    if (authMode === 'cloud' && isOnline && emailVerified) {
       const pathStr = `users/${uid}/profile/main`;
       try {
         await setDoc(
@@ -537,9 +701,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
     setSettings(next);
     if (patch.theme) setTheme(patch.theme);
-    await writeCachedCollection(uid, 'settings', [next]);
+    await persistCacheSafe(uid, 'settings', [next]);
 
-    if (authMode === 'cloud' && isOnline) {
+    if (authMode === 'cloud' && isOnline && emailVerified) {
       const pathStr = `users/${uid}/settings/preferences`;
       try {
         await setDoc(
@@ -576,11 +740,15 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const setter = getSetter(col);
     let existingCreatedAt = now;
+    let baseUpdatedAt = now;
+    let baseVersion: number | undefined;
 
     if (setter) {
       setter((prev) => {
         const existingItem = prev.find((item) => item.id === docId);
         if (existingItem?.createdAt) existingCreatedAt = existingItem.createdAt;
+        if (existingItem?.updatedAt) baseUpdatedAt = existingItem.updatedAt;
+        if (typeof existingItem?.version === 'number') baseVersion = existingItem.version;
         const fullItem = {
           ...existingItem,
           ...recordInput,
@@ -592,7 +760,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const updatedList = isUpdate
           ? prev.map((item) => (item.id === docId ? fullItem : item))
           : [fullItem, ...prev.filter((item) => item.id !== docId)];
-        writeCachedCollection(uid, col, updatedList);
+        persistCacheSafe(uid, col, updatedList);
         return updatedList;
       });
     }
@@ -620,6 +788,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         payload: fullRecord as unknown as Record<string, unknown>,
         createdAt: now,
         attempts: 0,
+        baseUpdatedAt,
+        baseVersion,
       };
       await enqueueSyncOperation(qItem);
       const q = await readSyncQueue(uid);
@@ -649,9 +819,30 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (hasUpdatedAt) cleanPayload.updatedAt = serverTimestamp();
         await setDoc(ref, cleanPayload);
       }
-      setSyncState('synced');
+      setSyncState(conflicts.length > 0 ? 'conflict' : 'synced');
       return fullRecord;
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.toLowerCase().includes('network') || msg.toLowerCase().includes('offline')) {
+        await enqueueSyncOperation({
+          id: makeId('sync'),
+          uid,
+          collectionName: col,
+          docId,
+          operation: isUpdate ? 'update' : 'create',
+          payload: fullRecord as unknown as Record<string, unknown>,
+          createdAt: now,
+          attempts: 1,
+          nextRetryAt: new Date(Date.now() + computeBackoffDelayMs(1)).toISOString(),
+          baseUpdatedAt,
+          baseVersion,
+          lastError: msg,
+        });
+        const q = await readSyncQueue(uid);
+        setPendingSyncCount(q.length);
+        setSyncState('waiting_sync');
+        return fullRecord;
+      }
       setSyncState('sync_failed');
       handleFirestoreError(err, isUpdate ? OperationType.UPDATE : OperationType.CREATE, docPath);
     }
@@ -662,7 +853,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (setter) {
       setter((prev) => {
         const next = prev.filter((item) => item.id !== id);
-        writeCachedCollection(uid, col, next);
+        persistCacheSafe(uid, col, next);
         return next;
       });
     }
@@ -823,6 +1014,8 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         isOnline,
         syncState,
         pendingSyncCount,
+        conflicts,
+        storageQuota,
         loadingData,
         syncError,
         profile,
@@ -853,6 +1046,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         clearAllNotifications,
         logAudit,
         retrySyncNow: flushSyncQueue,
+        resolveConflict,
         exportAllUserData,
         purgeCloudAndLocalAccountData,
       }}

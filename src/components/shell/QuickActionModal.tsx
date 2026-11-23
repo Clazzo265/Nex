@@ -26,7 +26,7 @@ export const QuickActionModal: React.FC<QuickActionModalProps> = ({ open, onClos
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState<Task['priority']>('medium');
   const [dueDate, setDueDate] = useState(today);
-  const [txType, setTxType] = useState<'expense' | 'income'>('expense');
+  const [txType, setTxType] = useState<'expense' | 'income' | 'transfer'>('expense');
   const [amountMajor, setAmountMajor] = useState('');
   const [category, setCategory] = useState('General');
   const [noteContent, setNoteContent] = useState('');
@@ -271,11 +271,12 @@ export const QuickActionModal: React.FC<QuickActionModalProps> = ({ open, onClos
                 <select
                   id="quick-tx-type"
                   value={txType}
-                  onChange={(e) => setTxType(e.target.value as 'expense' | 'income')}
+                  onChange={(e) => setTxType(e.target.value as 'expense' | 'income' | 'transfer')}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-2 text-sm text-slate-900 dark:text-white"
                 >
                   <option value="expense">Expense</option>
                   <option value="income">Income</option>
+                  <option value="transfer">Transfer</option>
                 </select>
               </div>
               <div>

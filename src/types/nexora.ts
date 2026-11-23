@@ -141,12 +141,13 @@ export interface GradeRecord {
 export interface Transaction {
   id: string;
   uid: string;
-  type: 'income' | 'expense';
+  type: 'income' | 'expense' | 'transfer';
   amountMinor: number;
   currency: string;
   category: string;
   description?: string;
   paymentMethod?: string;
+  transferAccount?: string;
   transactionDate: string;
   isEstimate: boolean;
   idempotencyKey: string;
@@ -269,6 +270,8 @@ export interface VaultFileRef {
   category?: string;
   storageProvider: 'local_cache' | 'google_drive' | 'firebase_storage';
   driveFileId?: string;
+  driveParentId?: string;
+  driveWebViewLink?: string;
   uploadStatus: 'local_only' | 'pending' | 'synced' | 'error';
   createdAt: string;
   updatedAt: string;
@@ -303,5 +306,8 @@ export interface SyncQueueItem {
   payload?: Record<string, unknown>;
   createdAt: string;
   attempts: number;
+  nextRetryAt?: string;
+  baseUpdatedAt?: string;
+  baseVersion?: number;
   lastError?: string;
 }

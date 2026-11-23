@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Check, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { Check, Lock, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import { useWorkspace } from '../contexts/WorkspaceContext';
 import { computeFinanceSummary, formatMinorCurrency } from '../lib/finance';
 import { getTodayKey } from '../lib/planner';
@@ -21,6 +22,7 @@ interface ChatTurn {
 }
 
 export const AIAssistantModule: React.FC = () => {
+  const { authMode, emailVerified, getIdToken, logout } = useAuth();
   const {
     isOnline,
     settings,
@@ -39,6 +41,7 @@ export const AIAssistantModule: React.FC = () => {
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usageNote, setUsageNote] = useState<string | null>(null);
 
   // Explicit user consent toggles for context sharing
   const [allowTasks, setAllowTasks] = useState(false);
@@ -48,6 +51,10 @@ export const AIAssistantModule: React.FC = () => {
   const [allowNotes, setAllowNotes] = useState(false);
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+
+  const hasAnySharedContext =
+    allowTasks || allowAcademic || allowFinance || allowGoals || allowNotes;
+  const canCallCloudAi = authMode === 'cloud' && emailVerified && isOnline;
 
   const buildConsentedContext = () => {
     const todayKey = getTodayKey(settings.timezone);
@@ -62,7 +69,9 @@ export const AIAssistantModule: React.FC = () => {
     if (allowAcademic) {
       out.academicSummary =
         courses.length > 0
-          ? `Courses: ${courses.map((c) => `${c.code} ${c.title}`).join('; ')}. Open assignments: ${assignments.filter((a) => a.status !== 'graded').length}`
+          ? `Courses: ${courses.map((c) => `${c.code} ${c.title}`).join('; ')}. Open assignments: ${
+              assignments.filter((a) => a.status !== 'graded').length
+            }`
           : 'No courses recorded.';
     }
     if (allowFinance) {
@@ -92,8 +101,28 @@ export const AIAssistantModule: React.FC = () => {
     if (!prompt.trim() || busy) return;
     setError(null);
 
+    if (authMode !== 'cloud') {
+      setError(
+        'AI Assistant requires a verified cloud sign-in for server-side token authentication. Your local workspace modules remain fully functional.'
+      );
+      return;
+    }
+
+    if (!emailVerified) {
+      setError('Verify your email address before calling the NEXORA AI Assistant.');
+      return;
+    }
+
     if (!isOnline) {
-      setError('You are currently offline. AI Assistant requires an active connection, while all other NEXORA modules continue working locally.');
+      setError(
+        'You are currently offline. AI Assistant requires an active connection, while all other NEXORA modules continue working locally.'
+      );
+      return;
+    }
+
+    const token = await getIdToken(false);
+    if (!token) {
+      setError('Unable to obtain a valid session token. Refresh your login and retry.');
       return;
     }
 
@@ -106,17 +135,26 @@ export const AIAssistantModule: React.FC = () => {
     try {
       const res = await fetch('/api/ai/assist', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           prompt: userText,
           mode,
-          consentedContext: buildConsentedContext(),
+          consentAcknowledged: hasAnySharedContext,
+          consentedContext: hasAnySharedContext ? buildConsentedContext() : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.message || 'Assistant service unavailable right now.');
         return;
+      }
+      if (data.usage) {
+        setUsageNote(
+          `${data.usage.remainingInWindow} / ${data.usage.windowLimit} requests left this minute`
+        );
       }
       setTurns((prev) => [
         ...prev,
@@ -173,8 +211,8 @@ export const AIAssistantModule: React.FC = () => {
               Data Permission Controls
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
-              The assistant only receives data categories you explicitly check below. It can never
-              silently modify records or delete files.
+              The assistant only receives data categories you explicitly check below. Every request
+              is authenticated with your verified Firebase ID token.
             </p>
           </div>
         </div>
@@ -245,7 +283,7 @@ export const AIAssistantModule: React.FC = () => {
 
       {/* Conversation Area */}
       <section className="lg:col-span-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-5 flex flex-col min-h-[480px]">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-blue-600 dark:text-sky-400" />
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
@@ -253,9 +291,28 @@ export const AIAssistantModule: React.FC = () => {
             </h2>
           </div>
           <span className="text-xs text-slate-500 dark:text-slate-400">
-            Suggestions require review
+            {usageNote ?? 'Suggestions require review'}
           </span>
         </div>
+
+        {authMode !== 'cloud' && (
+          <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-800 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Lock className="w-4 h-4 shrink-0" />
+              <span>
+                You are in Local Offline Mode. Sign in with a verified cloud account to use the
+                authenticated AI Assistant.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="font-semibold underline whitespace-nowrap"
+            >
+              Sign In with Cloud Account
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto py-4 space-y-4">
           {turns.length === 0 ? (
@@ -274,8 +331,8 @@ export const AIAssistantModule: React.FC = () => {
                 key={turn.id}
                 className={`rounded-xl p-4 text-sm ${
                   turn.role === 'user'
-                    ? 'bg-blue-600 text-white ml-8'
-                    : 'border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B1220] text-slate-900 dark:text-slate-100 mr-8'
+                    ? 'bg-blue-600 text-white ml-6 sm:ml-10'
+                    : 'border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B1220] text-slate-900 dark:text-slate-100 mr-6 sm:mr-10'
                 }`}
               >
                 {turn.role === 'assistant' && (
@@ -344,13 +401,17 @@ export const AIAssistantModule: React.FC = () => {
             type="text"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Ask NEXORA Assistant..."
+            placeholder={
+              canCallCloudAi
+                ? 'Ask NEXORA Assistant...'
+                : 'Sign in with a verified cloud account to ask NEXORA Assistant...'
+            }
             className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white"
           />
           <button
             type="submit"
             disabled={busy || !prompt.trim()}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50 min-h-[44px]"
           >
             <Send className="w-4 h-4" />
             {busy ? 'Thinking...' : 'Send'}

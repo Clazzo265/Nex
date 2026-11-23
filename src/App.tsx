@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Lock } from 'lucide-react';
 import { AuthScreen } from './components/auth/AuthScreen';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { NexoraLogo } from './components/common/NexoraLogo';
@@ -37,8 +38,95 @@ function readInitialModule(): ModuleId {
   return VALID_MODULES.has(hash) ? hash : 'overview';
 }
 
+const LocalWorkspaceUnlockGate: React.FC = () => {
+  const { activeLocalWorkspace, unlockLocalWorkspace, logout } = useAuth();
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const ok = await unlockLocalWorkspace(pin);
+      if (!ok) {
+        setError('Incorrect PIN for this local workspace.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#0B1220] p-4">
+      <div className="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-6 space-y-5">
+        <div className="flex items-center gap-3">
+          <NexoraLogo size={32} />
+          <div>
+            <h1 className="font-display text-lg font-semibold text-slate-900 dark:text-white">
+              Unlock Local Workspace
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {activeLocalWorkspace?.label ?? 'Local Workspace'}
+            </p>
+          </div>
+        </div>
+        {error && (
+          <div
+            role="alert"
+            className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300"
+          >
+            {error}
+          </div>
+        )}
+        <form onSubmit={handleUnlock} className="space-y-4">
+          <div>
+            <label
+              htmlFor="local-pin-unlock"
+              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+            >
+              Workspace PIN
+            </label>
+            <div className="relative">
+              <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+              <input
+                id="local-pin-unlock"
+                type="password"
+                autoFocus
+                value={pin}
+                onChange={(e) => setPin(e.target.value)}
+                placeholder="Enter PIN"
+                required
+                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] pl-9 pr-3 py-2.5 text-sm text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={logout}
+              className="text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-white"
+            >
+              Switch Account
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {busy ? 'Unlocking...' : 'Unlock'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 const NexoraWorkspaceRouter: React.FC = () => {
-  const { authMode } = useAuth();
+  const { authMode, emailVerified, localWorkspaceLocked } = useAuth();
   const [activeModule, setActiveModule] = useState<ModuleId>(readInitialModule);
 
   useEffect(() => {
@@ -75,8 +163,13 @@ const NexoraWorkspaceRouter: React.FC = () => {
     );
   }
 
-  if (authMode === 'unauthenticated') {
+  // Require complete verification before initializing Firestore profile/listeners
+  if (authMode === 'unauthenticated' || (authMode === 'cloud' && !emailVerified)) {
     return <AuthScreen />;
+  }
+
+  if (authMode === 'local' && localWorkspaceLocked) {
+    return <LocalWorkspaceUnlockGate />;
   }
 
   return (

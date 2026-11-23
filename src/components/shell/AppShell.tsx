@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   Bell,
   BookOpen,
   CalendarDays,
@@ -9,6 +10,7 @@ import {
   FolderLock,
   GraduationCap,
   LayoutDashboard,
+  Lock,
   LogOut,
   Menu,
   Moon,
@@ -62,15 +64,23 @@ interface AppShellProps {
 }
 
 export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, children }) => {
-  const { authMode, displayName, emailVerified, resendVerificationEmail, refreshAuthUser, logout } =
-    useAuth();
+  const {
+    authMode,
+    displayName,
+    activeLocalWorkspace,
+    lockLocalWorkspace,
+    logout,
+  } = useAuth();
   const { resolvedTheme, setTheme } = useTheme();
   const {
     isOnline,
     syncState,
     pendingSyncCount,
+    conflicts,
+    storageQuota,
     syncError,
     retrySyncNow,
+    resolveConflict,
     tasks,
     budgets,
     transactions,
@@ -83,7 +93,8 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
   const [searchOpen, setSearchOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -108,9 +119,11 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
 
   const syncLabel =
     authMode === 'local'
-      ? 'Local Device Storage'
+      ? `Local (${activeLocalWorkspace?.label ?? 'Device'})`
       : !isOnline
       ? `Offline (${pendingSyncCount} queued)`
+      : conflicts.length > 0
+      ? `${conflicts.length} sync conflict${conflicts.length > 1 ? 's' : ''}`
       : syncState === 'syncing'
       ? 'Synchronizing...'
       : syncState === 'waiting_sync'
@@ -180,14 +193,14 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-200 dark:border-slate-800/80 space-y-2">
+        <div className="p-3 border-t border-slate-200 dark:border-slate-800/80 space-y-1.5">
           {!sidebarCollapsed && (
             <div className="px-2 py-1.5 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between gap-2">
               <span className="truncate">{syncLabel}</span>
               {pendingSyncCount > 0 && isOnline && authMode === 'cloud' && (
                 <button
                   type="button"
-                  onClick={retrySyncNow}
+                  onClick={() => retrySyncNow(true)}
                   aria-label="Retry synchronization"
                   className="text-blue-600 dark:text-sky-400 hover:underline shrink-0"
                 >
@@ -195,6 +208,17 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
                 </button>
               )}
             </div>
+          )}
+          {authMode === 'local' && activeLocalWorkspace?.pinHash && (
+            <button
+              type="button"
+              onClick={lockLocalWorkspace}
+              aria-label="Lock local workspace"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+            >
+              <Lock className="w-4 h-4 shrink-0" />
+              {!sidebarCollapsed && <span>Lock Workspace</span>}
+            </button>
           )}
           <button
             type="button"
@@ -216,7 +240,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
             <button
               type="button"
               onClick={() => onNavigate('overview')}
-              className="md:hidden shrink-0"
+              className="md:hidden shrink-0 min-h-[40px] min-w-[40px] flex items-center justify-center"
               aria-label="Go to Overview"
             >
               <NexoraLogo size={28} />
@@ -231,7 +255,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
               type="button"
               onClick={() => setSearchOpen(true)}
               aria-label="Open global search"
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1220] px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1220] px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 min-h-[38px]"
             >
               <Search className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Search</span>
@@ -241,7 +265,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
               type="button"
               onClick={() => setQuickAddOpen(true)}
               aria-label="Quick create"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
             >
               <Plus className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Quick Add</span>
@@ -253,7 +277,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
               type="button"
               onClick={() => setNotifOpen(true)}
               aria-label={`Notifications (${alertCount} active)`}
-              className="relative p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              className="relative p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0 min-h-[38px] min-w-[38px] flex items-center justify-center"
             >
               <Bell className="w-4 h-4" />
               {alertCount > 0 && (
@@ -267,7 +291,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
               type="button"
               onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
               aria-label="Switch color theme"
-              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0 min-h-[38px] min-w-[38px] flex items-center justify-center"
             >
               {resolvedTheme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
@@ -276,20 +300,36 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
               type="button"
               onClick={() => onNavigate('settings')}
               aria-label="Open profile and settings"
-              className="hidden sm:inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 max-w-[140px]"
+              className="hidden sm:inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 max-w-[160px] min-h-[38px]"
             >
               <span className="truncate">{displayName}</span>
             </button>
           </div>
         </header>
 
-        {/* Connectivity & Email Verification Banners */}
+        {/* Connectivity, Quota, Conflict & Error Banners */}
+        {authMode === 'local' && (
+          <div className="px-4 md:px-6 py-1.5 bg-slate-200/60 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 flex items-center justify-between gap-3">
+            <span className="truncate">
+              Device-only profile: <strong>{activeLocalWorkspace?.label ?? 'Local Workspace'}</strong>{' '}
+              — records are stored in this browser&apos;s IndexedDB and are not cloud-backed.
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigate('settings')}
+              className="font-medium text-blue-600 dark:text-sky-400 hover:underline whitespace-nowrap shrink-0"
+            >
+              Manage Profile
+            </button>
+          </div>
+        )}
+
         {!isOnline && (
           <div className="px-4 md:px-6 py-2 bg-amber-500/15 border-b border-amber-500/30 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <WifiOff className="w-3.5 h-3.5 shrink-0" />
               <span>
-                Offline Mode — Saved changes are stored locally in IndexedDB and will sync automatically when online.
+                Offline Mode — Saved changes are stored locally in IndexedDB and queued with retry backoff.
               </span>
             </div>
             <span className="font-mono tabular-nums whitespace-nowrap shrink-0">
@@ -298,44 +338,42 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
           </div>
         )}
 
+        {storageQuota?.isNearLimit && (
+          <div className="px-4 md:px-6 py-2 bg-amber-500/15 border-b border-amber-500/30 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-3">
+            <span>
+              Device storage usage is at {storageQuota.percentUsed}% of browser quota. Export a backup archive in Settings.
+            </span>
+          </div>
+        )}
+
+        {conflicts.length > 0 && (
+          <div className="px-4 md:px-6 py-2.5 bg-amber-500/15 border-b border-amber-500/30 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                {conflicts.length} synchronization conflict{conflicts.length > 1 ? 's' : ''} detected. Newer cloud data was protected from silent overwrite.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setConflictModalOpen(true)}
+              className="rounded-md bg-amber-600 hover:bg-amber-700 px-3 py-1 text-white font-medium whitespace-nowrap"
+            >
+              Review &amp; Resolve
+            </button>
+          </div>
+        )}
+
         {syncError && isOnline && (
           <div className="px-4 md:px-6 py-2 bg-rose-500/10 border-b border-rose-500/30 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-4">
             <span>{syncError}</span>
             <button
               type="button"
-              onClick={retrySyncNow}
+              onClick={() => retrySyncNow(true)}
               className="font-medium underline whitespace-nowrap shrink-0"
             >
-              Retry Sync
+              Retry Now
             </button>
-          </div>
-        )}
-
-        {authMode === 'cloud' && !emailVerified && (
-          <div className="px-4 md:px-6 py-2.5 bg-blue-600/10 border-b border-blue-500/30 text-xs text-blue-800 dark:text-sky-200 flex flex-wrap items-center justify-between gap-3">
-            <span>
-              Email verification required for cloud sync writes.{' '}
-              {verificationNotice ? verificationNotice : 'Check your inbox for the verification link.'}
-            </span>
-            <div className="flex items-center gap-3 shrink-0">
-              <button
-                type="button"
-                onClick={async () => {
-                  await resendVerificationEmail();
-                  setVerificationNotice('Verification email resent.');
-                }}
-                className="font-medium underline"
-              >
-                Resend Email
-              </button>
-              <button
-                type="button"
-                onClick={refreshAuthUser}
-                className="rounded bg-blue-600 px-2.5 py-1 text-white font-medium hover:bg-blue-700"
-              >
-                I Verified
-              </button>
-            </div>
           </div>
         )}
 
@@ -345,7 +383,99 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation (<= 56px height, well under 15% sticky cap) */}
+      {/* Conflict Resolution Modal */}
+      {conflictModalOpen && conflicts.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Resolve Synchronization Conflicts"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[2px]"
+          onClick={() => setConflictModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-6 space-y-4 max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                Sync Conflicts ({conflicts.length})
+              </h2>
+              <button
+                type="button"
+                onClick={() => setConflictModalOpen(false)}
+                aria-label="Close conflict resolver"
+                className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              A document changed on another session while you were offline. Choose which version to keep.
+            </p>
+            <div className="space-y-4">
+              {conflicts.map((c) => (
+                <div
+                  key={c.id}
+                  className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-3 text-xs"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-900 dark:text-white">
+                      {c.collectionName} · {c.label}
+                    </span>
+                    <span className="text-slate-500 font-mono">{c.docId}</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="rounded bg-slate-50 dark:bg-[#0B1220] p-3 border border-slate-200 dark:border-slate-800">
+                      <p className="font-medium text-slate-800 dark:text-slate-200">
+                        Local Offline Edit
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-mono">
+                        {c.localUpdatedAt}
+                      </p>
+                    </div>
+                    <div className="rounded bg-slate-50 dark:bg-[#0B1220] p-3 border border-slate-200 dark:border-slate-800">
+                      <p className="font-medium text-slate-800 dark:text-slate-200">
+                        Newer Cloud Version
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-mono">
+                        {c.remoteUpdatedAt}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={resolvingId === c.id}
+                      onClick={async () => {
+                        setResolvingId(c.id);
+                        await resolveConflict(c.id, 'use_cloud');
+                        setResolvingId(null);
+                      }}
+                      className="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    >
+                      Keep Cloud Version
+                    </button>
+                    <button
+                      type="button"
+                      disabled={resolvingId === c.id}
+                      onClick={async () => {
+                        setResolvingId(c.id);
+                        await resolveConflict(c.id, 'keep_local');
+                        setResolvingId(null);
+                      }}
+                      className="rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 font-medium text-white"
+                    >
+                      Overwrite with Local Edit
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Bottom Navigation */}
       <nav
         aria-label="Mobile Primary Navigation"
         className="md:hidden fixed bottom-0 inset-x-0 z-30 h-14 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] flex items-center justify-around px-2"
@@ -425,7 +555,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
                       onNavigate(item.id);
                       setMobileMenuOpen(false);
                     }}
-                    className={`flex items-center gap-2.5 px-3 py-3 rounded-lg border text-sm font-medium text-left ${
+                    className={`flex items-center gap-2.5 px-3 py-3 rounded-lg border text-sm font-medium text-left min-h-[44px] ${
                       active
                         ? 'border-blue-600 bg-blue-600 text-white'
                         : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200'
@@ -440,7 +570,7 @@ export const AppShell: React.FC<AppShellProps> = ({ activeModule, onNavigate, ch
             <button
               type="button"
               onClick={logout}
-              className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 py-3 text-sm font-medium text-rose-600 dark:text-rose-400"
+              className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 py-3 text-sm font-medium text-rose-600 dark:text-rose-400 min-h-[44px]"
             >
               <LogOut className="w-4 h-4" />
               {authMode === 'local' ? 'Exit Local Mode' : 'Sign Out'}

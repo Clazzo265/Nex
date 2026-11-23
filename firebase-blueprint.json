@@ -145,12 +145,13 @@
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "type": { "type": "string", "enum": ["income", "expense"], "maxLength": 16 },
+        "type": { "type": "string", "enum": ["income", "expense", "transfer"], "maxLength": 16 },
         "amountMinor": { "type": "integer" },
         "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
         "category": { "type": "string", "minLength": 1, "maxLength": 60 },
         "description": { "type": "string", "maxLength": 300 },
         "paymentMethod": { "type": "string", "maxLength": 60 },
+        "transferAccount": { "type": "string", "maxLength": 60 },
         "transactionDate": { "type": "string", "minLength": 1, "maxLength": 40 },
         "isEstimate": { "type": "boolean" },
         "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -303,6 +304,8 @@
         "category": { "type": "string", "maxLength": 60 },
         "storageProvider": { "type": "string", "enum": ["local_cache", "google_drive", "firebase_storage"], "maxLength": 24 },
         "driveFileId": { "type": "string", "maxLength": 200 },
+        "driveParentId": { "type": "string", "maxLength": 200 },
+        "driveWebViewLink": { "type": "string", "maxLength": 500 },
         "uploadStatus": { "type": "string", "enum": ["local_only", "pending", "synced", "error"], "maxLength": 20 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }

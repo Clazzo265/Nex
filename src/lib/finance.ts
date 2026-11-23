@@ -58,14 +58,26 @@ export function formatMinorCurrency(amountMinor: number, currencyCode = 'MWK'): 
   return `${sign}${meta.symbol} ${formattedWhole}.${frac}`;
 }
 
+export interface FinanceReconciliation {
+  totalRecords: number;
+  actualIncomeCount: number;
+  actualExpenseCount: number;
+  transferCount: number;
+  estimateCount: number;
+  recomputedNetMinor: number;
+  isBalanced: boolean;
+}
+
 export interface FinanceSummary {
   currency: string;
   actualIncomeMinor: number;
   actualExpenseMinor: number;
   actualNetMinor: number;
+  transferVolumeMinor: number;
   estimatedIncomeMinor: number;
   estimatedExpenseMinor: number;
   byCategoryMinor: Record<string, number>;
+  reconciliation: FinanceReconciliation;
 }
 
 export function computeFinanceSummary(
@@ -81,34 +93,93 @@ export function computeFinanceSummary(
 
   let actualIncomeMinor = 0;
   let actualExpenseMinor = 0;
+  let transferVolumeMinor = 0;
   let estimatedIncomeMinor = 0;
   let estimatedExpenseMinor = 0;
+  let actualIncomeCount = 0;
+  let actualExpenseCount = 0;
+  let transferCount = 0;
+  let estimateCount = 0;
   const byCategoryMinor: Record<string, number> = {};
 
   for (const tx of filtered) {
     const amount = Math.trunc(tx.amountMinor);
+    if (tx.type === 'transfer') {
+      transferCount += 1;
+      if (!tx.isEstimate) {
+        transferVolumeMinor += amount;
+      } else {
+        estimateCount += 1;
+      }
+      continue;
+    }
+
     if (tx.isEstimate) {
+      estimateCount += 1;
       if (tx.type === 'income') estimatedIncomeMinor += amount;
       else estimatedExpenseMinor += amount;
     } else {
       if (tx.type === 'income') {
+        actualIncomeCount += 1;
         actualIncomeMinor += amount;
       } else {
+        actualExpenseCount += 1;
         actualExpenseMinor += amount;
         byCategoryMinor[tx.category] = (byCategoryMinor[tx.category] ?? 0) + amount;
       }
     }
   }
 
+  const actualNetMinor = actualIncomeMinor - actualExpenseMinor;
+  const categoryTotal = Object.values(byCategoryMinor).reduce((acc, v) => acc + v, 0);
+
   return {
     currency,
     actualIncomeMinor,
     actualExpenseMinor,
-    actualNetMinor: actualIncomeMinor - actualExpenseMinor,
+    actualNetMinor,
+    transferVolumeMinor,
     estimatedIncomeMinor,
     estimatedExpenseMinor,
     byCategoryMinor,
+    reconciliation: {
+      totalRecords: filtered.length,
+      actualIncomeCount,
+      actualExpenseCount,
+      transferCount,
+      estimateCount,
+      recomputedNetMinor: actualIncomeMinor - actualExpenseMinor,
+      isBalanced: categoryTotal === actualExpenseMinor && actualNetMinor === actualIncomeMinor - actualExpenseMinor,
+    },
   };
+}
+
+export interface DuplicateCandidate {
+  type: Transaction['type'];
+  amountMinor: number;
+  currency: string;
+  category: string;
+  transactionDate: string;
+  description?: string;
+}
+
+export function findPotentialDuplicateTransaction(
+  candidate: DuplicateCandidate,
+  existing: Transaction[]
+): Transaction | null {
+  const normDesc = (candidate.description ?? '').trim().toLowerCase();
+  const normCat = candidate.category.trim().toLowerCase();
+  return (
+    existing.find(
+      (tx) =>
+        tx.type === candidate.type &&
+        Math.trunc(tx.amountMinor) === Math.trunc(candidate.amountMinor) &&
+        tx.currency === candidate.currency &&
+        tx.transactionDate === candidate.transactionDate &&
+        tx.category.trim().toLowerCase() === normCat &&
+        (tx.description ?? '').trim().toLowerCase() === normDesc
+    ) ?? null
+  );
 }
 
 export interface BudgetStatus {
@@ -165,6 +236,7 @@ export function exportTransactionsToCSV(transactions: Transaction[]): string {
     'Amount',
     'Estimate',
     'Payment Method',
+    'Transfer Account',
     'Description',
   ].join(',');
 
@@ -187,6 +259,7 @@ export function exportTransactionsToCSV(transactions: Transaction[]): string {
       amountStr,
       tx.isEstimate ? 'Estimated' : 'Actual',
       escapeCsv(tx.paymentMethod ?? ''),
+      escapeCsv(tx.transferAccount ?? ''),
       escapeCsv(tx.description ?? ''),
     ].join(',');
   });

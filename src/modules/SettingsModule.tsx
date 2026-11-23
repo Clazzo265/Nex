@@ -1,19 +1,52 @@
 import React, { useState } from 'react';
-import { Download, MailCheck, Trash2 } from 'lucide-react';
+import {
+  Download,
+  KeyRound,
+  Link2,
+  Lock,
+  MailCheck,
+  ShieldCheck,
+  Trash2,
+  Unlink,
+} from 'lucide-react';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useWorkspace } from '../contexts/WorkspaceContext';
+import {
+  AUTH_PROVIDERS,
+  extractFirebaseErrorCode,
+  mapFirebaseAuthError,
+  type SocialProviderId,
+} from '../lib/authUtils';
 import { SUPPORTED_CURRENCIES } from '../lib/finance';
+import { appCheckStatus } from '../lib/firebase';
 import { ProfileInputSchema } from '../lib/validation';
 import type { DateFormatOption, ThemePreference } from '../types/nexora';
 
 export const SettingsModule: React.FC = () => {
-  const { authMode, emailVerified, resendVerificationEmail, refreshAuthUser } = useAuth();
+  const {
+    authMode,
+    emailVerified,
+    connectedProviders,
+    localWorkspaces,
+    activeLocalWorkspace,
+    resendVerificationEmail,
+    refreshAuthUser,
+    linkProviderWithPopup,
+    unlinkAuthProvider,
+    reauthenticateWithSocialPopup,
+    reauthenticateWithPassword,
+    switchLocalWorkspace,
+    renameActiveLocalWorkspace,
+    updateActiveLocalWorkspacePin,
+    lockLocalWorkspace,
+  } = useAuth();
   const { theme, setTheme } = useTheme();
   const {
     profile,
     settings,
+    storageQuota,
     updateProfileData,
     updateSettingsData,
     exportAllUserData,
@@ -27,6 +60,13 @@ export const SettingsModule: React.FC = () => {
   const [bio, setBio] = useState(profile.bio ?? '');
 
   const [savingProfile, setSavingProfile] = useState(false);
+  const [securityBusy, setSecurityBusy] = useState<string | null>(null);
+  const [reauthPassword, setReauthPassword] = useState('');
+  const [needsReauth, setNeedsReauth] = useState(false);
+
+  const [localLabelInput, setLocalLabelInput] = useState(activeLocalWorkspace?.label ?? '');
+  const [localPinInput, setLocalPinInput] = useState('');
+
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -60,6 +100,40 @@ export const SettingsModule: React.FC = () => {
     }
   };
 
+  const handleLinkProvider = async (providerId: SocialProviderId) => {
+    setError(null);
+    setFeedback(null);
+    setSecurityBusy(`link:${providerId}`);
+    try {
+      await linkProviderWithPopup(providerId);
+      setFeedback(`Connected ${providerId} to your NEXORA account.`);
+    } catch (err) {
+      const code = extractFirebaseErrorCode(err);
+      if (code === 'auth/requires-recent-login') setNeedsReauth(true);
+      const mapped = mapFirebaseAuthError(err, 'Account Linking');
+      setError(`${mapped.title}: ${mapped.message} ${mapped.nextAction}`);
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
+
+  const handleUnlinkProvider = async (providerId: string) => {
+    setError(null);
+    setFeedback(null);
+    setSecurityBusy(`unlink:${providerId}`);
+    try {
+      await unlinkAuthProvider(providerId);
+      setFeedback(`Disconnected ${providerId} from your account.`);
+    } catch (err) {
+      const code = extractFirebaseErrorCode(err);
+      if (code === 'auth/requires-recent-login') setNeedsReauth(true);
+      const mapped = mapFirebaseAuthError(err, 'Unlink Provider');
+      setError(`${mapped.title}: ${mapped.message} ${mapped.nextAction}`);
+    } finally {
+      setSecurityBusy(null);
+    }
+  };
+
   const handleExportArchive = async () => {
     const json = await exportAllUserData();
     const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
@@ -71,6 +145,8 @@ export const SettingsModule: React.FC = () => {
     URL.revokeObjectURL(url);
     setFeedback('Complete personal archive exported as JSON.');
   };
+
+  const hasPasswordProvider = connectedProviders.some((p) => p.providerId === 'password');
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -120,7 +196,7 @@ export const SettingsModule: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={refreshAuthUser}
+                    onClick={() => refreshAuthUser()}
                     className="text-blue-600 dark:text-sky-400 underline ml-1"
                   >
                     Refresh
@@ -213,13 +289,252 @@ export const SettingsModule: React.FC = () => {
             <button
               type="submit"
               disabled={savingProfile}
-              className="rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 min-h-[40px]"
             >
               {savingProfile ? 'Saving...' : 'Save Profile'}
             </button>
           </div>
         </form>
       </section>
+
+      {/* Security -> Connected Accounts (Cloud Mode) */}
+      {authMode === 'cloud' && (
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-sky-400" />
+                Security &amp; Connected Accounts
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Link or manage sign-in methods on your account. At least one connected method is
+                always preserved.
+              </p>
+            </div>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              App Check:{' '}
+              {appCheckStatus.initialized
+                ? 'Active (reCAPTCHA v3)'
+                : 'Awaiting VITE_RECAPTCHA_SITE_KEY'}
+            </span>
+          </div>
+
+          <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+            {AUTH_PROVIDERS.map((provider) => {
+              const linked = connectedProviders.find((p) => p.providerId === provider.id);
+              const isOnlyProvider = connectedProviders.length <= 1;
+
+              return (
+                <li
+                  key={provider.id}
+                  className="py-3 flex flex-wrap items-center justify-between gap-3 text-xs"
+                >
+                  <div>
+                    <p className="font-medium text-slate-900 dark:text-white">{provider.label}</p>
+                    <p className="text-slate-500 dark:text-slate-400">
+                      {linked
+                        ? `Connected${linked.email ? ` · ${linked.email}` : ''}`
+                        : 'Not connected'}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {linked ? (
+                      <>
+                        {provider.isSocial && (
+                          <button
+                            type="button"
+                            disabled={securityBusy !== null}
+                            onClick={async () => {
+                              setSecurityBusy(`reauth:${provider.id}`);
+                              setError(null);
+                              try {
+                                await reauthenticateWithSocialPopup(
+                                  provider.id as SocialProviderId
+                                );
+                                setNeedsReauth(false);
+                                setFeedback(`Session refreshed via ${provider.label}.`);
+                              } catch (err) {
+                                const mapped = mapFirebaseAuthError(err, 'Reauthentication');
+                                setError(`${mapped.title}: ${mapped.message}`);
+                              } finally {
+                                setSecurityBusy(null);
+                              }
+                            }}
+                            className="rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                          >
+                            Verify Recent Login
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isOnlyProvider || securityBusy !== null}
+                          onClick={() => handleUnlinkProvider(provider.id)}
+                          title={
+                            isOnlyProvider
+                              ? 'Cannot remove your last remaining sign-in method'
+                              : `Disconnect ${provider.label}`
+                          }
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 disabled:opacity-40"
+                        >
+                          <Unlink className="w-3.5 h-3.5" />
+                          {securityBusy === `unlink:${provider.id}` ? 'Removing...' : 'Unlink'}
+                        </button>
+                      </>
+                    ) : provider.isSocial ? (
+                      <button
+                        type="button"
+                        disabled={securityBusy !== null}
+                        onClick={() => handleLinkProvider(provider.id as SocialProviderId)}
+                        className="inline-flex items-center gap-1 rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 font-medium text-white disabled:opacity-50"
+                      >
+                        <Link2 className="w-3.5 h-3.5" />
+                        {securityBusy === `link:${provider.id}` ? 'Linking...' : 'Link Account'}
+                      </button>
+                    ) : (
+                      <span className="text-slate-400">Available on registration</span>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
+          {(needsReauth || hasPasswordProvider) && hasPasswordProvider && (
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-2 text-xs">
+              <KeyRound className="w-4 h-4 text-slate-400 shrink-0" />
+              <input
+                type="password"
+                value={reauthPassword}
+                onChange={(e) => setReauthPassword(e.target.value)}
+                placeholder="Confirm password to refresh recent login"
+                className="flex-1 min-w-[200px] rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-1.5 text-slate-900 dark:text-white"
+              />
+              <button
+                type="button"
+                disabled={!reauthPassword || securityBusy !== null}
+                onClick={async () => {
+                  setSecurityBusy('reauth:password');
+                  setError(null);
+                  try {
+                    await reauthenticateWithPassword(reauthPassword);
+                    setReauthPassword('');
+                    setNeedsReauth(false);
+                    setFeedback('Password reauthentication succeeded.');
+                  } catch (err) {
+                    const mapped = mapFirebaseAuthError(err, 'Password Reauthentication');
+                    setError(`${mapped.title}: ${mapped.message}`);
+                  } finally {
+                    setSecurityBusy(null);
+                  }
+                }}
+                className="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+              >
+                Reauthenticate
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Local Workspace Controls (Local Mode) */}
+      {authMode === 'local' && activeLocalWorkspace && (
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                Local Offline Profile &amp; Device Lock
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Profile ID: <span className="font-mono">{activeLocalWorkspace.id}</span> · Data is
+                isolated to this browser profile.
+              </p>
+            </div>
+            {activeLocalWorkspace.pinHash && (
+              <button
+                type="button"
+                onClick={lockLocalWorkspace}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                Lock Now
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div className="space-y-2">
+              <label className="block font-medium text-slate-700 dark:text-slate-300">
+                Rename Workspace Profile
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={localLabelInput}
+                  onChange={(e) => setLocalLabelInput(e.target.value)}
+                  className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-1.5 text-slate-900 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    renameActiveLocalWorkspace(localLabelInput);
+                    setFeedback('Local workspace name updated.');
+                  }}
+                  className="rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-1.5 font-medium text-white"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block font-medium text-slate-700 dark:text-slate-300">
+                {activeLocalWorkspace.pinHash ? 'Update or Clear Device PIN' : 'Set Device PIN (4+ chars)'}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={localPinInput}
+                  onChange={(e) => setLocalPinInput(e.target.value)}
+                  placeholder="Enter new PIN"
+                  className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1220] px-3 py-1.5 text-slate-900 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await updateActiveLocalWorkspacePin(localPinInput || null);
+                    setLocalPinInput('');
+                    setFeedback(localPinInput ? 'Workspace PIN updated.' : 'Workspace PIN cleared.');
+                  }}
+                  className="rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-1.5 font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  {localPinInput ? 'Set PIN' : 'Clear PIN'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {localWorkspaces.length > 1 && (
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-500 dark:text-slate-400">Switch local profile:</span>
+              {localWorkspaces.map((ws) => (
+                <button
+                  key={ws.id}
+                  type="button"
+                  onClick={() => switchLocalWorkspace(ws.id)}
+                  className={`rounded-md px-2.5 py-1 font-medium border ${
+                    ws.id === activeLocalWorkspace.id
+                      ? 'border-blue-600 bg-blue-600 text-white'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                  }`}
+                >
+                  {ws.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Appearance & Localization */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-6 space-y-4">
@@ -336,9 +651,18 @@ export const SettingsModule: React.FC = () => {
 
       {/* Data Export & Account Deletion */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C32] p-6 space-y-4">
-        <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-          Data Ownership, Export &amp; Account Deletion
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+            Data Ownership, Export &amp; Account Deletion
+          </h2>
+          {storageQuota?.supported && (
+            <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
+              Local storage used: {Math.round(storageQuota.usageBytes / 1024)} KB (
+              {storageQuota.percentUsed}%)
+            </span>
+          )}
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-sm font-medium text-slate-900 dark:text-white">
@@ -351,7 +675,7 @@ export const SettingsModule: React.FC = () => {
           <button
             type="button"
             onClick={handleExportArchive}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 min-h-[40px]"
           >
             <Download className="w-3.5 h-3.5" />
             Export JSON
@@ -370,7 +694,7 @@ export const SettingsModule: React.FC = () => {
           <button
             type="button"
             onClick={() => setConfirmDeleteOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-medium text-white"
+            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-medium text-white min-h-[40px]"
           >
             <Trash2 className="w-3.5 h-3.5" />
             Delete Account
@@ -392,11 +716,10 @@ export const SettingsModule: React.FC = () => {
             await purgeCloudAndLocalAccountData();
             setConfirmDeleteOpen(false);
           } catch (err) {
-            setError(
-              err instanceof Error
-                ? err.message
-                : 'Re-authentication may be required before deleting your account.'
-            );
+            const code = extractFirebaseErrorCode(err);
+            if (code === 'auth/requires-recent-login') setNeedsReauth(true);
+            const mapped = mapFirebaseAuthError(err, 'Account Deletion');
+            setError(`${mapped.title}: ${mapped.message} ${mapped.nextAction}`);
             setConfirmDeleteOpen(false);
           } finally {
             setDeleting(false);

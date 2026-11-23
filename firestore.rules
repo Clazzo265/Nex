@@ -177,15 +177,16 @@ service cloud.firestore {
 
     function isValidTransaction(data, userId) {
       return data.keys().hasAll(['uid', 'type', 'amountMinor', 'currency', 'category', 'transactionDate', 'isEstimate', 'idempotencyKey', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'type', 'amountMinor', 'currency', 'category', 'description', 'paymentMethod', 'transactionDate', 'isEstimate', 'idempotencyKey', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'type', 'amountMinor', 'currency', 'category', 'description', 'paymentMethod', 'transferAccount', 'transactionDate', 'isEstimate', 'idempotencyKey', 'createdAt', 'updatedAt'])
         && data.uid == userId
         && isValidId(data.uid)
-        && data.type in ['income', 'expense']
+        && data.type in ['income', 'expense', 'transfer']
         && data.amountMinor is int && data.amountMinor >= 0
         && data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 6
         && data.category is string && data.category.size() >= 1 && data.category.size() <= 60
         && isOptStr(data, 'description', 300)
         && isOptStr(data, 'paymentMethod', 60)
+        && isOptStr(data, 'transferAccount', 60)
         && data.transactionDate is string && data.transactionDate.size() >= 1 && data.transactionDate.size() <= 40
         && data.isEstimate is bool
         && data.idempotencyKey is string && data.idempotencyKey.size() >= 1 && data.idempotencyKey.size() <= 128
@@ -311,7 +312,7 @@ service cloud.firestore {
 
     function isValidVaultFile(data, userId) {
       return data.keys().hasAll(['uid', 'name', 'mimeType', 'sizeBytes', 'storageProvider', 'uploadStatus', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'mimeType', 'sizeBytes', 'category', 'storageProvider', 'driveFileId', 'uploadStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'mimeType', 'sizeBytes', 'category', 'storageProvider', 'driveFileId', 'driveParentId', 'driveWebViewLink', 'uploadStatus', 'createdAt', 'updatedAt'])
         && data.uid == userId
         && isValidId(data.uid)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 240
@@ -320,6 +321,8 @@ service cloud.firestore {
         && isOptStr(data, 'category', 60)
         && data.storageProvider in ['local_cache', 'google_drive', 'firebase_storage']
         && isOptStr(data, 'driveFileId', 200)
+        && isOptStr(data, 'driveParentId', 200)
+        && isOptStr(data, 'driveWebViewLink', 500)
         && data.uploadStatus in ['local_only', 'pending', 'synced', 'error']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -470,7 +473,7 @@ service cloud.firestore {
           && incoming().idempotencyKey == existing().idempotencyKey
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['type', 'amountMinor', 'currency', 'category', 'description', 'paymentMethod', 'transactionDate', 'isEstimate', 'updatedAt']);
+          && incoming().diff(existing()).affectedKeys().hasOnly(['type', 'amountMinor', 'currency', 'category', 'description', 'paymentMethod', 'transferAccount', 'transactionDate', 'isEstimate', 'updatedAt']);
         allow delete: if isVerifiedOwner(userId) && isValidId(transactionId);
       }
 
@@ -598,7 +601,7 @@ service cloud.firestore {
           && incoming().uid == existing().uid
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'storageProvider', 'driveFileId', 'uploadStatus', 'updatedAt']);
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'storageProvider', 'driveFileId', 'driveParentId', 'driveWebViewLink', 'uploadStatus', 'updatedAt']);
         allow delete: if isVerifiedOwner(userId) && isValidId(fileId);
       }
 
