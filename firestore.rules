@@ -1,0 +1,627 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isOwner(userId) && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOptStr(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptStringList(data, field, maxLen) {
+      return !(field in data) || (
+        data[field] is list
+        && data[field].size() <= maxLen
+        && (data[field].size() == 0 || (data[field][0] is string && data[field][0].size() <= 100))
+      );
+    }
+
+    function isOptMapList(data, field, maxLen) {
+      return !(field in data) || (
+        data[field] is list
+        && data[field].size() <= maxLen
+        && (data[field].size() == 0 || data[field][0] is map)
+      );
+    }
+
+    // Validation Blueprints
+    function isValidUserRoot(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'bio', 'roleTitle', 'institution', 'location', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && isOptStr(data, 'bio', 500)
+        && isOptStr(data, 'roleTitle', 100)
+        && isOptStr(data, 'institution', 140)
+        && isOptStr(data, 'location', 120)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserSettings(data, userId) {
+      return data.keys().hasAll(['uid', 'theme', 'currency', 'timezone', 'dateFormat', 'language', 'notificationsEnabled', 'deadlineAlerts', 'budgetAlerts', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'theme', 'currency', 'timezone', 'dateFormat', 'language', 'notificationsEnabled', 'deadlineAlerts', 'budgetAlerts', 'dashboardWidgets', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.theme in ['dark', 'light', 'system']
+        && data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 6
+        && data.timezone is string && data.timezone.size() >= 1 && data.timezone.size() <= 64
+        && data.dateFormat in ['YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY']
+        && data.language is string && data.language.size() >= 2 && data.language.size() <= 16
+        && data.notificationsEnabled is bool
+        && data.deadlineAlerts is bool
+        && data.budgetAlerts is bool
+        && isOptMapList(data, 'dashboardWidgets', 20)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTask(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'priority', 'status', 'recurring', 'version', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'title', 'notes', 'priority', 'status', 'dueDate', 'category', 'recurring', 'subtasks', 'version', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && isOptStr(data, 'notes', 2000)
+        && data.priority in ['low', 'medium', 'high', 'urgent']
+        && data.status in ['todo', 'in_progress', 'completed']
+        && isOptStr(data, 'dueDate', 40)
+        && isOptStr(data, 'category', 60)
+        && data.recurring in ['none', 'daily', 'weekly', 'monthly']
+        && isOptMapList(data, 'subtasks', 30)
+        && data.version is int && data.version >= 1
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEvent(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'startTime', 'endTime', 'allDay', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'title', 'description', 'startTime', 'endTime', 'category', 'location', 'allDay', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && isOptStr(data, 'description', 1000)
+        && data.startTime is string && data.startTime.size() >= 1 && data.startTime.size() <= 40
+        && data.endTime is string && data.endTime.size() >= 1 && data.endTime.size() <= 40
+        && isOptStr(data, 'category', 60)
+        && isOptStr(data, 'location', 160)
+        && data.allDay is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourse(data, userId) {
+      return data.keys().hasAll(['uid', 'code', 'title', 'semester', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'code', 'title', 'semester', 'lecturer', 'status', 'credits', 'gradingScale', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 32
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.semester is string && data.semester.size() >= 1 && data.semester.size() <= 60
+        && isOptStr(data, 'lecturer', 120)
+        && data.status in ['active', 'completed', 'planned']
+        && (!('credits' in data) || (data.credits is number && data.credits >= 0 && data.credits <= 100))
+        && isOptStr(data, 'gradingScale', 120)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAssignment(data, userId) {
+      return data.keys().hasAll(['uid', 'courseId', 'title', 'activityType', 'dueDate', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'courseId', 'title', 'activityType', 'dueDate', 'status', 'notes', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && isValidId(data.courseId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.activityType in ['assignment', 'coursework', 'exam', 'practical', 'research']
+        && data.dueDate is string && data.dueDate.size() >= 1 && data.dueDate.size() <= 40
+        && data.status in ['pending', 'in_progress', 'submitted', 'graded']
+        && isOptStr(data, 'notes', 1500)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGrade(data, userId) {
+      return data.keys().hasAll(['uid', 'courseId', 'title', 'score', 'maxScore', 'weight', 'isEstimated', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'courseId', 'title', 'score', 'maxScore', 'weight', 'isEstimated', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && isValidId(data.courseId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.score is number && data.score >= 0
+        && data.maxScore is number && data.maxScore > 0
+        && data.weight is number && data.weight >= 0 && data.weight <= 100
+        && data.isEstimated is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data, userId) {
+      return data.keys().hasAll(['uid', 'type', 'amountMinor', 'currency', 'category', 'transactionDate', 'isEstimate', 'idempotencyKey', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'type', 'amountMinor', 'currency', 'category', 'description', 'paymentMethod', 'transactionDate', 'isEstimate', 'idempotencyKey', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.type in ['income', 'expense']
+        && data.amountMinor is int && data.amountMinor >= 0
+        && data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 6
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 60
+        && isOptStr(data, 'description', 300)
+        && isOptStr(data, 'paymentMethod', 60)
+        && data.transactionDate is string && data.transactionDate.size() >= 1 && data.transactionDate.size() <= 40
+        && data.isEstimate is bool
+        && data.idempotencyKey is string && data.idempotencyKey.size() >= 1 && data.idempotencyKey.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBudget(data, userId) {
+      return data.keys().hasAll(['uid', 'category', 'limitMinor', 'currency', 'monthKey', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'category', 'limitMinor', 'currency', 'monthKey', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 60
+        && data.limitMinor is int && data.limitMinor >= 0
+        && data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 6
+        && data.monthKey is string && data.monthKey.size() == 7 && data.monthKey.matches('^[0-9]{4}-[0-9]{2}$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSavingsGoal(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'targetMinor', 'currentMinor', 'currency', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'title', 'targetMinor', 'currentMinor', 'currency', 'targetDate', 'status', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.targetMinor is int && data.targetMinor > 0
+        && data.currentMinor is int && data.currentMinor >= 0
+        && data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 6
+        && isOptStr(data, 'targetDate', 40)
+        && data.status in ['active', 'paused', 'completed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGoal(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'horizon', 'status', 'progressPercent', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'title', 'description', 'horizon', 'status', 'targetDate', 'progressPercent', 'milestones', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && isOptStr(data, 'description', 1000)
+        && data.horizon in ['short_term', 'long_term']
+        && data.status in ['active', 'paused', 'archived', 'completed']
+        && isOptStr(data, 'targetDate', 40)
+        && data.progressPercent is int && data.progressPercent >= 0 && data.progressPercent <= 100
+        && isOptMapList(data, 'milestones', 30)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidHabit(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'frequency', 'targetPerPeriod', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'title', 'frequency', 'targetPerPeriod', 'active', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.frequency in ['daily', 'weekly']
+        && data.targetPerPeriod is int && data.targetPerPeriod >= 1 && data.targetPerPeriod <= 31
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidHabitEntry(data, userId) {
+      return data.keys().hasAll(['uid', 'habitId', 'dateKey', 'completed', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'habitId', 'dateKey', 'completed', 'createdAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && isValidId(data.habitId)
+        && data.dateKey is string && data.dateKey.size() == 10 && data.dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.completed is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidDevProject(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'description', 'technologies', 'status', 'deadline', 'repoUrl', 'notes', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 140
+        && isOptStr(data, 'description', 1500)
+        && isOptStringList(data, 'technologies', 20)
+        && data.status in ['planning', 'active', 'testing', 'released', 'archived']
+        && isOptStr(data, 'deadline', 40)
+        && isOptStr(data, 'repoUrl', 300)
+        && isOptStr(data, 'notes', 3000)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDevTask(data, userId) {
+      return data.keys().hasAll(['uid', 'projectId', 'title', 'kind', 'status', 'priority', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'projectId', 'title', 'kind', 'status', 'priority', 'devLog', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && isValidId(data.projectId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.kind in ['task', 'bug', 'feature', 'test']
+        && data.status in ['open', 'in_progress', 'done']
+        && data.priority in ['low', 'medium', 'high']
+        && isOptStr(data, 'devLog', 1500)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNote(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'content', 'isFavorite', 'version', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'title', 'content', 'category', 'tags', 'isFavorite', 'linkedCourseId', 'linkedProjectId', 'version', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.content is string && data.content.size() <= 20000
+        && isOptStr(data, 'category', 60)
+        && isOptStringList(data, 'tags', 15)
+        && data.isFavorite is bool
+        && isOptStr(data, 'linkedCourseId', 128)
+        && isOptStr(data, 'linkedProjectId', 128)
+        && data.version is int && data.version >= 1
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVaultFile(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'mimeType', 'sizeBytes', 'storageProvider', 'uploadStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'mimeType', 'sizeBytes', 'category', 'storageProvider', 'driveFileId', 'uploadStatus', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 240
+        && data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 120
+        && data.sizeBytes is int && data.sizeBytes >= 0
+        && isOptStr(data, 'category', 60)
+        && data.storageProvider in ['local_cache', 'google_drive', 'firebase_storage']
+        && isOptStr(data, 'driveFileId', 200)
+        && data.uploadStatus in ['local_only', 'pending', 'synced', 'error']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data, userId) {
+      return data.keys().hasAll(['uid', 'title', 'body', 'category', 'read', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'title', 'body', 'category', 'read', 'createdAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.body is string && data.body.size() <= 500
+        && data.category in ['task', 'academic', 'finance', 'goal', 'vault', 'system']
+        && data.read is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data, userId) {
+      return data.keys().hasAll(['uid', 'entityType', 'entityId', 'action', 'summary', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'entityType', 'entityId', 'action', 'summary', 'createdAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.entityType is string && data.entityType.size() >= 1 && data.entityType.size() <= 40
+        && data.entityId is string && data.entityId.size() >= 1 && data.entityId.size() <= 128
+        && data.action in ['create', 'update', 'delete', 'export']
+        && data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 300
+        && data.createdAt is timestamp;
+    }
+
+    // Owner Root & Profile Rules
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserRoot(incoming(), userId)
+        && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserRoot(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /profile/{profileId} {
+        allow get: if isOwner(userId) && isValidId(profileId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isOwner(userId) && isValidId(profileId) && isValidUserProfile(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) && isValidId(profileId) && isValidUserProfile(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'bio', 'roleTitle', 'institution', 'location', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(profileId);
+      }
+
+      match /settings/{settingsId} {
+        allow get: if isOwner(userId) && isValidId(settingsId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isOwner(userId) && isValidId(settingsId) && isValidUserSettings(incoming(), userId)
+          && incoming().updatedAt == request.time;
+        allow update: if isOwner(userId) && isValidId(settingsId) && isValidUserSettings(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['theme', 'currency', 'timezone', 'dateFormat', 'language', 'notificationsEnabled', 'deadlineAlerts', 'budgetAlerts', 'dashboardWidgets', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(settingsId);
+      }
+
+      match /tasks/{taskId} {
+        allow get: if isOwner(userId) && isValidId(taskId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(taskId) && isValidTask(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(taskId) && isValidTask(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'priority', 'status', 'dueDate', 'category', 'recurring', 'subtasks', 'version', 'updatedAt'])
+          );
+        allow delete: if isVerifiedOwner(userId) && isValidId(taskId);
+      }
+
+      match /events/{eventId} {
+        allow get: if isOwner(userId) && isValidId(eventId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(eventId) && isValidEvent(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(eventId) && isValidEvent(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'startTime', 'endTime', 'category', 'location', 'allDay', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(eventId);
+      }
+
+      match /courses/{courseId} {
+        allow get: if isOwner(userId) && isValidId(courseId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(courseId) && isValidCourse(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(courseId) && isValidCourse(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'title', 'semester', 'lecturer', 'status', 'credits', 'gradingScale', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(courseId);
+      }
+
+      match /assignments/{assignmentId} {
+        allow get: if isOwner(userId) && isValidId(assignmentId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(assignmentId) && isValidAssignment(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId)/courses/$(incoming().courseId));
+        allow update: if isVerifiedOwner(userId) && isValidId(assignmentId) && isValidAssignment(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'activityType', 'dueDate', 'status', 'notes', 'updatedAt'])
+          );
+        allow delete: if isVerifiedOwner(userId) && isValidId(assignmentId);
+      }
+
+      match /grades/{gradeId} {
+        allow get: if isOwner(userId) && isValidId(gradeId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(gradeId) && isValidGrade(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId)/courses/$(incoming().courseId));
+        allow update: if isVerifiedOwner(userId) && isValidId(gradeId) && isValidGrade(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'score', 'maxScore', 'weight', 'isEstimated', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(gradeId);
+      }
+
+      match /transactions/{transactionId} {
+        allow get: if isOwner(userId) && isValidId(transactionId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(transactionId) && isValidTransaction(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(transactionId) && isValidTransaction(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().idempotencyKey == existing().idempotencyKey
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['type', 'amountMinor', 'currency', 'category', 'description', 'paymentMethod', 'transactionDate', 'isEstimate', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(transactionId);
+      }
+
+      match /budgets/{budgetId} {
+        allow get: if isOwner(userId) && isValidId(budgetId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(budgetId) && isValidBudget(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(budgetId) && isValidBudget(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['category', 'limitMinor', 'currency', 'monthKey', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(budgetId);
+      }
+
+      match /savingsGoals/{goalId} {
+        allow get: if isOwner(userId) && isValidId(goalId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(goalId) && isValidSavingsGoal(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(goalId) && isValidSavingsGoal(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && existing().status != 'completed'
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['currentMinor', 'status', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'targetMinor', 'currentMinor', 'currency', 'targetDate', 'status', 'updatedAt'])
+          );
+        allow delete: if isVerifiedOwner(userId) && isValidId(goalId);
+      }
+
+      match /goals/{goalId} {
+        allow get: if isOwner(userId) && isValidId(goalId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(goalId) && isValidGoal(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(goalId) && isValidGoal(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'horizon', 'status', 'targetDate', 'progressPercent', 'milestones', 'updatedAt'])
+          );
+        allow delete: if isVerifiedOwner(userId) && isValidId(goalId);
+      }
+
+      match /habits/{habitId} {
+        allow get: if isOwner(userId) && isValidId(habitId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(habitId) && isValidHabit(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(habitId) && isValidHabit(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'frequency', 'targetPerPeriod', 'active', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(habitId);
+      }
+
+      match /habitEntries/{entryId} {
+        allow get: if isOwner(userId) && isValidId(entryId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(entryId) && isValidHabitEntry(incoming(), userId)
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId)/habits/$(incoming().habitId));
+        allow update: if false;
+        allow delete: if isVerifiedOwner(userId) && isValidId(entryId);
+      }
+
+      match /projects/{projectId} {
+        allow get: if isOwner(userId) && isValidId(projectId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(projectId) && isValidDevProject(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(projectId) && isValidDevProject(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'technologies', 'status', 'deadline', 'repoUrl', 'notes', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(projectId);
+      }
+
+      match /developerTasks/{taskId} {
+        allow get: if isOwner(userId) && isValidId(taskId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(taskId) && isValidDevTask(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId)/projects/$(incoming().projectId));
+        allow update: if isVerifiedOwner(userId) && isValidId(taskId) && isValidDevTask(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'kind', 'status', 'priority', 'devLog', 'updatedAt'])
+          );
+        allow delete: if isVerifiedOwner(userId) && isValidId(taskId);
+      }
+
+      match /notes/{noteId} {
+        allow get: if isOwner(userId) && isValidId(noteId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(noteId) && isValidNote(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(noteId) && isValidNote(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['isFavorite', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'content', 'category', 'tags', 'isFavorite', 'linkedCourseId', 'linkedProjectId', 'version', 'updatedAt'])
+          );
+        allow delete: if isVerifiedOwner(userId) && isValidId(noteId);
+      }
+
+      match /vaultFiles/{fileId} {
+        allow get: if isOwner(userId) && isValidId(fileId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(fileId) && isValidVaultFile(incoming(), userId)
+          && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(fileId) && isValidVaultFile(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'storageProvider', 'driveFileId', 'uploadStatus', 'updatedAt']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(fileId);
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if isOwner(userId) && isValidId(notificationId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(notificationId) && isValidNotification(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if isVerifiedOwner(userId) && isValidId(notificationId) && isValidNotification(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+        allow delete: if isVerifiedOwner(userId) && isValidId(notificationId);
+      }
+
+      match /auditLogs/{logId} {
+        allow get: if isOwner(userId) && isValidId(logId);
+        allow list: if isOwner(userId) && resource.data.uid == request.auth.uid;
+        allow create: if isVerifiedOwner(userId) && isValidId(logId) && isValidAuditLog(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+  }
+}

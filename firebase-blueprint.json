@@ -1,0 +1,423 @@
+{
+  "entities": {
+    "UserRoot": {
+      "title": "UserRoot",
+      "description": "Root account document for a NEXORA user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "maxLength": 254 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user profile details.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 254 },
+        "bio": { "type": "string", "maxLength": 500 },
+        "roleTitle": { "type": "string", "maxLength": 100 },
+        "institution": { "type": "string", "maxLength": 140 },
+        "location": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "createdAt", "updatedAt"]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "Localization, appearance, dashboard, and notification preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "theme": { "type": "string", "enum": ["dark", "light", "system"], "maxLength": 16 },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
+        "timezone": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "dateFormat": { "type": "string", "enum": ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY"], "maxLength": 16 },
+        "language": { "type": "string", "minLength": 2, "maxLength": 16 },
+        "notificationsEnabled": { "type": "boolean" },
+        "deadlineAlerts": { "type": "boolean" },
+        "budgetAlerts": { "type": "boolean" },
+        "dashboardWidgets": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "theme", "currency", "timezone", "dateFormat", "language", "notificationsEnabled", "deadlineAlerts", "budgetAlerts", "updatedAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Smart Planner task item.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high", "urgent"], "maxLength": 16 },
+        "status": { "type": "string", "enum": ["todo", "in_progress", "completed"], "maxLength": 20 },
+        "dueDate": { "type": "string", "maxLength": 40 },
+        "category": { "type": "string", "maxLength": 60 },
+        "recurring": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"], "maxLength": 16 },
+        "subtasks": { "type": "array" },
+        "version": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "priority", "status", "recurring", "version", "createdAt", "updatedAt"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "Scheduled calendar event.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "startTime": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "endTime": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "category": { "type": "string", "maxLength": 60 },
+        "location": { "type": "string", "maxLength": 160 },
+        "allDay": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "startTime", "endTime", "allDay", "createdAt", "updatedAt"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Academic Hub course record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "semester": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "lecturer": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "completed", "planned"], "maxLength": 20 },
+        "credits": { "type": "number" },
+        "gradingScale": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "code", "title", "semester", "status", "createdAt", "updatedAt"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Academic activity, assignment, or exam.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "activityType": { "type": "string", "enum": ["assignment", "coursework", "exam", "practical", "research"], "maxLength": 24 },
+        "dueDate": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "submitted", "graded"], "maxLength": 20 },
+        "notes": { "type": "string", "maxLength": 1500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "courseId", "title", "activityType", "dueDate", "status", "createdAt", "updatedAt"]
+    },
+    "GradeRecord": {
+      "title": "GradeRecord",
+      "description": "Academic grade entry distinguishing recorded vs estimated marks.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "score": { "type": "number" },
+        "maxScore": { "type": "number" },
+        "weight": { "type": "number" },
+        "isEstimated": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "courseId", "title", "score", "maxScore", "weight", "isEstimated", "createdAt", "updatedAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial transaction stored in exact integer minor currency units.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["income", "expense"], "maxLength": 16 },
+        "amountMinor": { "type": "integer" },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 300 },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "transactionDate": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "isEstimate": { "type": "boolean" },
+        "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "type", "amountMinor", "currency", "category", "transactionDate", "isEstimate", "idempotencyKey", "createdAt", "updatedAt"]
+    },
+    "Budget": {
+      "title": "Budget",
+      "description": "Monthly category budget in integer minor units.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "limitMinor": { "type": "integer" },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
+        "monthKey": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "category", "limitMinor", "currency", "monthKey", "createdAt", "updatedAt"]
+    },
+    "SavingsGoal": {
+      "title": "SavingsGoal",
+      "description": "Personal savings target in integer minor units.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "targetMinor": { "type": "integer" },
+        "currentMinor": { "type": "integer" },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
+        "targetDate": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["active", "paused", "completed"], "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "targetMinor", "currentMinor", "currency", "status", "createdAt", "updatedAt"]
+    },
+    "Goal": {
+      "title": "Goal",
+      "description": "Short-term or long-term personal goal.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "horizon": { "type": "string", "enum": ["short_term", "long_term"], "maxLength": 16 },
+        "status": { "type": "string", "enum": ["active", "paused", "archived", "completed"], "maxLength": 20 },
+        "targetDate": { "type": "string", "maxLength": 40 },
+        "progressPercent": { "type": "integer" },
+        "milestones": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "horizon", "status", "progressPercent", "createdAt", "updatedAt"]
+    },
+    "Habit": {
+      "title": "Habit",
+      "description": "Daily or weekly habit.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "frequency": { "type": "string", "enum": ["daily", "weekly"], "maxLength": 16 },
+        "targetPerPeriod": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "frequency", "targetPerPeriod", "active", "createdAt", "updatedAt"]
+    },
+    "HabitEntry": {
+      "title": "HabitEntry",
+      "description": "Habit completion log entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "habitId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "dateKey": { "type": "string", "minLength": 10, "maxLength": 10 },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "habitId", "dateKey", "completed", "createdAt"]
+    },
+    "DevProject": {
+      "title": "DevProject",
+      "description": "Software development project.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "description": { "type": "string", "maxLength": 1500 },
+        "technologies": { "type": "array" },
+        "status": { "type": "string", "enum": ["planning", "active", "testing", "released", "archived"], "maxLength": 20 },
+        "deadline": { "type": "string", "maxLength": 40 },
+        "repoUrl": { "type": "string", "maxLength": 300 },
+        "notes": { "type": "string", "maxLength": 3000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "status", "createdAt", "updatedAt"]
+    },
+    "DevTask": {
+      "title": "DevTask",
+      "description": "Development issue, bug, or feature task.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "kind": { "type": "string", "enum": ["task", "bug", "feature", "test"], "maxLength": 16 },
+        "status": { "type": "string", "enum": ["open", "in_progress", "done"], "maxLength": 20 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"], "maxLength": 16 },
+        "devLog": { "type": "string", "maxLength": 1500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "projectId", "title", "kind", "status", "priority", "createdAt", "updatedAt"]
+    },
+    "KnowledgeNote": {
+      "title": "KnowledgeNote",
+      "description": "Personal knowledge note.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "content": { "type": "string", "maxLength": 20000 },
+        "category": { "type": "string", "maxLength": 60 },
+        "tags": { "type": "array" },
+        "isFavorite": { "type": "boolean" },
+        "linkedCourseId": { "type": "string", "maxLength": 128 },
+        "linkedProjectId": { "type": "string", "maxLength": 128 },
+        "version": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "content", "isFavorite", "version", "createdAt", "updatedAt"]
+    },
+    "VaultFileRef": {
+      "title": "VaultFileRef",
+      "description": "Metadata reference for a Digital Vault document.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "sizeBytes": { "type": "integer" },
+        "category": { "type": "string", "maxLength": 60 },
+        "storageProvider": { "type": "string", "enum": ["local_cache", "google_drive", "firebase_storage"], "maxLength": 24 },
+        "driveFileId": { "type": "string", "maxLength": 200 },
+        "uploadStatus": { "type": "string", "enum": ["local_only", "pending", "synced", "error"], "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "mimeType", "sizeBytes", "storageProvider", "uploadStatus", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "In-app notification.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "body": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "enum": ["task", "academic", "finance", "goal", "vault", "system"], "maxLength": 20 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "title", "body", "category", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable financial/security audit log entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "entityType": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "entityId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "action": { "type": "string", "enum": ["create", "update", "delete", "export"], "maxLength": 20 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "entityType", "entityId", "action", "summary", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserRoot" },
+      "description": "Owner-isolated root user account record."
+    },
+    "/users/{userId}/profile/{profileId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-isolated PII profile document."
+    },
+    "/users/{userId}/settings/{settingsId}": {
+      "schema": { "$ref": "#/entities/UserSettings" },
+      "description": "Owner-isolated user localization, theme, and widget preferences."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Owner-isolated Smart Planner tasks."
+    },
+    "/users/{userId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "Owner-isolated calendar events."
+    },
+    "/users/{userId}/courses/{courseId}": {
+      "schema": { "$ref": "#/entities/Course" },
+      "description": "Owner-isolated academic courses."
+    },
+    "/users/{userId}/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Owner-isolated academic assignments and exams."
+    },
+    "/users/{userId}/grades/{gradeId}": {
+      "schema": { "$ref": "#/entities/GradeRecord" },
+      "description": "Owner-isolated recorded and estimated grade items."
+    },
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "Owner-isolated financial transactions in minor units."
+    },
+    "/users/{userId}/budgets/{budgetId}": {
+      "schema": { "$ref": "#/entities/Budget" },
+      "description": "Owner-isolated monthly category budgets."
+    },
+    "/users/{userId}/savingsGoals/{goalId}": {
+      "schema": { "$ref": "#/entities/SavingsGoal" },
+      "description": "Owner-isolated savings targets."
+    },
+    "/users/{userId}/goals/{goalId}": {
+      "schema": { "$ref": "#/entities/Goal" },
+      "description": "Owner-isolated personal goals."
+    },
+    "/users/{userId}/habits/{habitId}": {
+      "schema": { "$ref": "#/entities/Habit" },
+      "description": "Owner-isolated daily/weekly habits."
+    },
+    "/users/{userId}/habitEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/HabitEntry" },
+      "description": "Owner-isolated habit completion entries."
+    },
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/DevProject" },
+      "description": "Owner-isolated developer projects."
+    },
+    "/users/{userId}/developerTasks/{taskId}": {
+      "schema": { "$ref": "#/entities/DevTask" },
+      "description": "Owner-isolated developer tasks, bugs, and features."
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/KnowledgeNote" },
+      "description": "Owner-isolated Knowledge Library notes."
+    },
+    "/users/{userId}/vaultFiles/{fileId}": {
+      "schema": { "$ref": "#/entities/VaultFileRef" },
+      "description": "Owner-isolated Digital Vault file metadata references."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "Owner-isolated in-app notifications."
+    },
+    "/users/{userId}/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Owner-isolated immutable audit log records."
+    }
+  }
+}
